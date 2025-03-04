@@ -1,0 +1,20 @@
+# General configuration parameters
+augmentation:
+  rotation_range: 15
+  horizontal_flip: true
+  brightness_limit: 0.2
+
+motion_detector:
+  history: 500
+  varThreshold: 16
+
+few_shot:
+  models: 3   # number of few-shot models in ensemble
+  confidence_threshold: 0.5
+
+yolo:
+  model_version: "YOLOv11"
+  use_pretrained: true
+  pretrained_weights: "path/to/pretrained/weights.pt"
+  epochs: 50
+  batch_size: 16

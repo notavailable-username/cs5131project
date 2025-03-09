@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QListWidget, QLabel, QMessageBox, QProgressBar, QComboBox,
     QDockWidget, QStackedLayout, QSplitter, QTableWidget, QTableWidgetItem
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 import cv2
 import os
@@ -13,7 +13,12 @@ from .video_player import VideoPlayer
 from models.motion_detector import MotionDetector
 from models.few_shot import FewShotEnsemble
 from models.yolo_trainer import YOLOTrainer
-from .image_labeller import LabelingTool
+import json
+from PyQt6.QtCore import QPoint, QTimer, Qt
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
+                             QLabel, QPushButton, QComboBox, QFileDialog,
+                             QInputDialog, QMessageBox)
 
 class VideoProcessThread(QThread):
     update_progress = pyqtSignal(int)
@@ -511,18 +516,308 @@ class MainWindow(QMainWindow):
             frame_path = os.path.join(uncertain_dir, f"frame_{frame_idx}.jpg")
             cv2.imwrite(frame_path, frame)
         
-        # Launch labeling tool
-        self.label_tool = LabelingTool()
-        self.label_tool.show()
-        
-        # Set labeling tool to use the uncertain frames directory
-        QTimer.singleShot(500, lambda: self.set_label_directory(uncertain_dir))
+        # Instead of using external LabelingTool, open our integrated labeling dialog
+        self.open_integrated_label_tool(uncertain_dir)
 
     def set_label_directory(self, directory):
-        # This method serves as a bridge to the labeling tool's method
-        if hasattr(self, 'label_tool'):
-            self.label_tool.load_image_directory()  # Trigger the file dialog
-            # In a real implementation, you'd modify LabelingTool to accept a directory parameter
+        # This method now directly handles the directory without using an external tool
+        if hasattr(self, 'label_dialog') and self.label_dialog.isVisible():
+            self.label_dialog.load_directory(directory)
+        else:
+            self.open_integrated_label_tool(directory)
+    
+    def open_integrated_label_tool(self, directory=None):
+        """Open an integrated labeling tool dialog instead of using the external LabelingTool class"""
+        self.label_dialog = LabelDialog(self, directory)
+        self.label_dialog.finished.connect(self.on_labeling_finished)
+        self.label_dialog.show()
+    
+    def on_labeling_finished(self):
+        # Handle any post-labeling tasks here
+        QMessageBox.information(self, "Labeling Complete", 
+                               "Image labeling completed. Annotations saved.")
+        
+        # You might want to reload or update something here
+        # For example, refresh the model with new training data
+        pass
+
+# Add this class to replace the functionality of the missing LabelingTool
+class LabelDialog(QDialog):
+    def __init__(self, parent=None, directory=None):
+        super().__init__(parent)
+        self.setWindowTitle("Image Labeling Tool")
+        self.resize(1200, 800)
+        
+        # Initialize variables
+        self.image_dir = ""
+        self.image_files = []
+        self.current_image_index = -1
+        self.current_image = None
+        self.current_image_path = ""
+        self.classes = ["person", "car", "bicycle", "dog", "unknown"]
+        self.current_class = self.classes[0] if self.classes else ""
+        
+        # Mouse tracking variables
+        self.drawing = False
+        self.start_point = QPoint()
+        self.end_point = QPoint()
+        self.bounding_boxes = []  # [(x1, y1, x2, y2, class_name), ...]
+        self.current_box = None
+        
+        self.setup_ui()
+        
+        # Load directory if provided
+        if directory:
+            self.load_directory(directory)
+    
+    def setup_ui(self):
+        main_layout = QHBoxLayout(self)
+        
+        # Left panel - image viewer
+        self.image_label = QLabel("No image loaded")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(800, 600)
+        self.image_label.mousePressEvent = self.mouse_press
+        self.image_label.mouseMoveEvent = self.mouse_move
+        self.image_label.mouseReleaseEvent = self.mouse_release
+        
+        # Right panel - controls
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        
+        # Image navigation
+        nav_layout = QHBoxLayout()
+        self.btn_prev = QPushButton("Previous")
+        self.btn_next = QPushButton("Next")
+        self.btn_prev.clicked.connect(self.load_prev_image)
+        self.btn_next.clicked.connect(self.load_next_image)
+        nav_layout.addWidget(self.btn_prev)
+        nav_layout.addWidget(self.btn_next)
+        
+        # Class selection
+        self.class_combo = QComboBox()
+        self.class_combo.addItems(self.classes)
+        self.class_combo.currentTextChanged.connect(self.update_current_class)
+        
+        # Manage classes button
+        self.btn_manage_classes = QPushButton("Manage Classes")
+        self.btn_manage_classes.clicked.connect(self.manage_classes)
+        
+        # Load and save buttons
+        self.btn_load_dir = QPushButton("Load Image Directory")
+        self.btn_save = QPushButton("Save Annotations")
+        self.btn_done = QPushButton("Done")
+        self.btn_load_dir.clicked.connect(self.load_image_directory)
+        self.btn_save.clicked.connect(self.save_annotations)
+        self.btn_done.clicked.connect(self.accept)
+        
+        # Bounding box list
+        self.box_list = QListWidget()
+        self.box_list.itemClicked.connect(self.select_box)
+        
+        # Remove box button
+        self.btn_remove_box = QPushButton("Remove Selected Box")
+        self.btn_remove_box.clicked.connect(self.remove_selected_box)
+        
+        # Add widgets to right layout
+        right_layout.addLayout(nav_layout)
+        right_layout.addWidget(QLabel("Select Class:"))
+        right_layout.addWidget(self.class_combo)
+        right_layout.addWidget(self.btn_manage_classes)
+        right_layout.addWidget(QLabel("Bounding Boxes:"))
+        right_layout.addWidget(self.box_list)
+        right_layout.addWidget(self.btn_remove_box)
+        right_layout.addWidget(self.btn_load_dir)
+        right_layout.addWidget(self.btn_save)
+        right_layout.addWidget(self.btn_done)
+        right_layout.addStretch()
+        
+        # Add both panels to main layout
+        main_layout.addWidget(self.image_label, 3)
+        main_layout.addWidget(right_panel, 1)
+        
+        self.setLayout(main_layout)
+    
+    def load_image_directory(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Image Directory")
+        if dir_path:
+            self.load_directory(dir_path)
+    
+    def load_directory(self, directory):
+        if not directory:
+            return
+            
+        self.image_dir = directory
+        self.image_files = [f for f in os.listdir(directory) 
+                           if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        if not self.image_files:
+            QMessageBox.warning(self, "No Images", "No images found in the selected directory.")
+            return
+            
+        self.current_image_index = -1
+        self.load_next_image()
+    
+    def load_image(self, index):
+        if 0 <= index < len(self.image_files):
+            self.current_image_index = index
+            self.current_image_path = os.path.join(self.image_dir, self.image_files[index])
+            
+            # Load the image
+            self.current_image = cv2.imread(self.current_image_path)
+            if self.current_image is None:
+                return
+                
+            # Convert from BGR to RGB
+            self.current_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
+            
+            # Load annotations if they exist
+            self.bounding_boxes = []
+            annotation_file = os.path.splitext(self.current_image_path)[0] + ".json"
+            if os.path.exists(annotation_file):
+                try:
+                    with open(annotation_file, 'r') as f:
+                        self.bounding_boxes = json.load(f)
+                except Exception:
+                    pass
+            
+            self.update_display()
+            self.update_box_list()
+            
+            self.setWindowTitle(f"Image Labeling Tool - {self.image_files[index]} ({index+1}/{len(self.image_files)})")
+    
+    def load_next_image(self):
+        if self.current_image_index < len(self.image_files) - 1:
+            self.load_image(self.current_image_index + 1)
+    
+    def load_prev_image(self):
+        if self.current_image_index > 0:
+            self.load_image(self.current_image_index - 1)
+    
+    def update_display(self):
+        if self.current_image is None:
+            return
+            
+        # Create a copy of the image to draw on
+        display_image = self.current_image.copy()
+        
+        # Draw existing bounding boxes
+        for box in self.bounding_boxes:
+            x1, y1, x2, y2, class_name = box
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(display_image, class_name, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Draw the current box being created
+        if self.drawing and self.current_box:
+            x1, y1, x2, y2 = self.current_box
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        
+        # Convert to QImage and display
+        h, w, c = display_image.shape
+        qimg = QImage(display_image.data, w, h, w * c, QImage.Format.Format_RGB888)
+        self.image_label.setPixmap(QPixmap.fromImage(qimg))
+    
+    def update_box_list(self):
+        self.box_list.clear()
+        for i, (x1, y1, x2, y2, class_name) in enumerate(self.bounding_boxes):
+            self.box_list.addItem(f"{i+1}: {class_name} [{x1},{y1},{x2},{y2}]")
+    
+    def mouse_press(self, event):
+        if not self.current_image_path:
+            return
+            
+        self.drawing = True
+        self.start_point = event.position()
+        self.end_point = event.position()
+        
+        # Convert QPoint to integer coordinates
+        x = int(self.start_point.x())
+        y = int(self.start_point.y())
+        self.current_box = (x, y, x, y)
+    
+    def mouse_move(self, event):
+        if self.drawing:
+            self.end_point = event.position()
+            
+            # Convert QPoint to integer coordinates
+            x1 = int(self.start_point.x())
+            y1 = int(self.start_point.y())
+            x2 = int(self.end_point.x())
+            y2 = int(self.end_point.y())
+            
+            self.current_box = (x1, y1, x2, y2)
+            self.update_display()
+    
+    def mouse_release(self, event):
+        if self.drawing:
+            self.end_point = event.position()
+            self.drawing = False
+            
+            # Convert QPoint to integer coordinates
+            x1 = int(self.start_point.x())
+            y1 = int(self.start_point.y())
+            x2 = int(self.end_point.x())
+            y2 = int(self.end_point.y())
+            
+            # Ensure x1,y1 is the top-left and x2,y2 is the bottom-right
+            x1, x2 = min(x1, x2), max(x1, x2)
+            y1, y2 = min(y1, y2), max(y1, y2)
+            
+            # Only add if the box has some area
+            if x2 - x1 > 5 and y2 - y1 > 5:
+                self.bounding_boxes.append((x1, y1, x2, y2, self.current_class))
+                self.update_display()
+                self.update_box_list()
+            
+            self.current_box = None
+    
+    def select_box(self, item):
+        # Allow editing of selected box (not implemented for brevity)
+        pass
+    
+    def remove_selected_box(self):
+        selected_items = self.box_list.selectedItems()
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            index = self.box_list.row(item)
+            if 0 <= index < len(self.bounding_boxes):
+                self.bounding_boxes.pop(index)
+        
+        self.update_display()
+        self.update_box_list()
+    
+    def update_current_class(self, class_name):
+        self.current_class = class_name
+    
+    def manage_classes(self):
+        # Simple class management
+        text, ok = QInputDialog.getText(
+            self, 'Manage Classes', 
+            'Enter class names separated by commas:',
+            text=",".join(self.classes)
+        )
+        
+        if ok and text.strip():
+            self.classes = [c.strip() for c in text.split(",") if c.strip()]
+            self.class_combo.clear()
+            self.class_combo.addItems(self.classes)
+            if self.classes:
+                self.current_class = self.classes[0]
+    
+    def save_annotations(self):
+        if not self.current_image_path or not self.bounding_boxes:
+            return
+            
+        # Save annotations in JSON format
+        annotation_file = os.path.splitext(self.current_image_path)[0] + ".json"
+        try:
+            with open(annotation_file, 'w') as f:
+                json.dump(self.bounding_boxes, f)
+            QMessageBox.information(self, "Success", f"Saved annotations to {annotation_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error saving annotations: {str(e)}")
     
     def prepare_training_data(self):
         if not self.output_dir:

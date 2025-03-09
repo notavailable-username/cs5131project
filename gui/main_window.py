@@ -18,7 +18,7 @@ from PyQt6.QtCore import QPoint, QTimer, Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
                              QLabel, QPushButton, QComboBox, QFileDialog,
-                             QInputDialog, QMessageBox)
+                             QInputDialog, QMessageBox, QScrollArea)
 
 class VideoProcessThread(QThread):
     update_progress = pyqtSignal(int)
@@ -541,6 +541,118 @@ class MainWindow(QMainWindow):
         # For example, refresh the model with new training data
         pass
 
+    def prepare_training_data(self):
+        """
+        Prepares and organizes data for model training.
+        Collects annotations and images from the current project.
+        """
+        if not self.output_dir:
+            QMessageBox.warning(self, "Warning", "Please select an output directory first.")
+            return False
+            
+        if len(self.classes) == 0:
+            QMessageBox.warning(self, "Warning", "Please define at least one class before preparing training data.")
+            return False
+            
+        # Create training data directory structure
+        training_dir = os.path.join(self.output_dir, "training_data")
+        os.makedirs(training_dir, exist_ok=True)
+        
+        # Process annotations and organize files
+        try:
+            # Check if we have detection results to use
+            if not self.all_detections:
+                QMessageBox.warning(self, "Warning", "No detection results available. Run detection first.")
+                return False
+                
+            # Copy annotated images and their labels to the training directory
+            images_count = 0
+            for i, detections in enumerate(self.all_detections):
+                if detections:  # If the frame has detections
+                    # Get the frame image
+                    cap = cv2.VideoCapture(self.video_path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    if ret:
+                        # Save image
+                        img_path = os.path.join(training_dir, f"image_{i:06d}.jpg")
+                        cv2.imwrite(img_path, frame)
+                        
+                        # Save annotations in YOLO format
+                        label_path = os.path.join(training_dir, f"image_{i:06d}.txt")
+                        with open(label_path, 'w') as f:
+                            for det in detections:
+                                class_idx = self.classes.index(det['class']) if 'class' in det else 0
+                                x, y, w, h = det['bbox']
+                                # Convert to YOLO format (normalized)
+                                height, width = frame.shape[:2]
+                                x_center = (x + w/2) / width
+                                y_center = (y + h/2) / height
+                                w_norm = w / width
+                                h_norm = h / height
+                                f.write(f"{class_idx} {x_center} {y_center} {w_norm} {h_norm}\n")
+                        
+                        images_count += 1
+            
+            # Create class mapping file
+            with open(os.path.join(training_dir, "classes.txt"), 'w') as f:
+                for class_name in self.classes:
+                    f.write(f"{class_name}\n")
+                    
+            QMessageBox.information(self, "Success", f"Training data prepared successfully with {images_count} images.")
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to prepare training data: {str(e)}")
+            return False
+
+    def start_yolo_training(self):
+        """
+        Starts the YOLO model training process with the prepared data.
+        """
+        if not self.output_dir:
+            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
+            return
+            
+        training_dir = os.path.join(self.output_dir, "training_data")
+        if not os.path.exists(training_dir) or not os.listdir(training_dir):
+            QMessageBox.warning(self, "Missing Data", "Please prepare the training data first.")
+            return
+        
+        # Configure YOLO trainer
+        yolo_config = self.config.get("yolo", {})
+        yolo_config["epochs"] = int(self.epochs_input.currentText())
+        yolo_config["batch_size"] = int(self.batch_size_input.currentText())
+        
+        try:
+            trainer = YOLOTrainer(yolo_config)
+            
+            # Setup training output directory
+            training_output = os.path.join(self.output_dir, "yolo_training")
+            os.makedirs(training_output, exist_ok=True)
+            
+            # Start training in a separate thread (simplified for now)
+            self.training_status.setText("Training started...")
+            
+            # In a real implementation, you'd run this in a QThread with progress updates
+            # For now, we're just showing a message about the intended behavior
+            QMessageBox.information(
+                self, "Training Started", 
+                f"YOLO training started with {yolo_config['epochs']} epochs.\n"
+                f"Results will be saved to {training_output}"
+            )
+            
+            # TODO: Implement actual training in a thread with progress updates
+            # self.training_thread = YOLOTrainingThread(trainer, training_dir, training_output)
+            # self.training_thread.progress_update.connect(self.update_training_progress)
+            # self.training_thread.finished.connect(self.training_complete)
+            # self.training_thread.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Training Error", f"Error starting training: {str(e)}")
+
 # Add this class to replace the functionality of the missing LabelingTool
 class LabelDialog(QDialog):
     def __init__(self, parent=None, directory=None):
@@ -563,6 +675,7 @@ class LabelDialog(QDialog):
         self.end_point = QPoint()
         self.bounding_boxes = []  # [(x1, y1, x2, y2, class_name), ...]
         self.current_box = None
+        self.selected_box_index = -1  # Track which box is selected
         
         self.setup_ui()
         
@@ -573,13 +686,29 @@ class LabelDialog(QDialog):
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         
-        # Left panel - image viewer
+        # Left panel - image selection with scroll view
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        
+        # Image list widget with scroll capability
+        left_layout.addWidget(QLabel("Images:"))
+        self.image_list = QListWidget()
+        self.image_list.itemClicked.connect(self.on_image_selected)
+        left_layout.addWidget(self.image_list)
+        
+        # Middle panel - image viewer
+        middle_panel = QWidget()
+        middle_layout = QVBoxLayout(middle_panel)
+        
+        # Image display label (no scroll area)
         self.image_label = QLabel("No image loaded")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumSize(800, 600)
         self.image_label.mousePressEvent = self.mouse_press
         self.image_label.mouseMoveEvent = self.mouse_move
         self.image_label.mouseReleaseEvent = self.mouse_release
+        
+        middle_layout.addWidget(self.image_label)
         
         # Right panel - controls
         right_panel = QWidget()
@@ -593,15 +722,31 @@ class LabelDialog(QDialog):
         self.btn_next.clicked.connect(self.load_next_image)
         nav_layout.addWidget(self.btn_prev)
         nav_layout.addWidget(self.btn_next)
+        right_layout.addLayout(nav_layout)
         
         # Class selection
+        right_layout.addWidget(QLabel("Select Class:"))
         self.class_combo = QComboBox()
         self.class_combo.addItems(self.classes)
         self.class_combo.currentTextChanged.connect(self.update_current_class)
+        right_layout.addWidget(self.class_combo)
         
         # Manage classes button
         self.btn_manage_classes = QPushButton("Manage Classes")
         self.btn_manage_classes.clicked.connect(self.manage_classes)
+        right_layout.addWidget(self.btn_manage_classes)
+        
+        # Bounding box table
+        right_layout.addWidget(QLabel("Bounding Boxes:"))
+        self.box_table = QTableWidget(0, 5)
+        self.box_table.setHorizontalHeaderLabels(["Class", "X", "Y", "Width", "Height"])
+        self.box_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        right_layout.addWidget(self.box_table)
+        
+        # Remove box button
+        self.btn_remove_box = QPushButton("Remove Selected Box")
+        self.btn_remove_box.clicked.connect(self.remove_selected_box)
+        right_layout.addWidget(self.btn_remove_box)
         
         # Load and save buttons
         self.btn_load_dir = QPushButton("Load Image Directory")
@@ -611,30 +756,15 @@ class LabelDialog(QDialog):
         self.btn_save.clicked.connect(self.save_annotations)
         self.btn_done.clicked.connect(self.accept)
         
-        # Bounding box list
-        self.box_list = QListWidget()
-        self.box_list.itemClicked.connect(self.select_box)
-        
-        # Remove box button
-        self.btn_remove_box = QPushButton("Remove Selected Box")
-        self.btn_remove_box.clicked.connect(self.remove_selected_box)
-        
-        # Add widgets to right layout
-        right_layout.addLayout(nav_layout)
-        right_layout.addWidget(QLabel("Select Class:"))
-        right_layout.addWidget(self.class_combo)
-        right_layout.addWidget(self.btn_manage_classes)
-        right_layout.addWidget(QLabel("Bounding Boxes:"))
-        right_layout.addWidget(self.box_list)
-        right_layout.addWidget(self.btn_remove_box)
         right_layout.addWidget(self.btn_load_dir)
         right_layout.addWidget(self.btn_save)
         right_layout.addWidget(self.btn_done)
         right_layout.addStretch()
         
-        # Add both panels to main layout
-        main_layout.addWidget(self.image_label, 3)
-        main_layout.addWidget(right_panel, 1)
+        # Add all panels to main layout
+        main_layout.addWidget(left_panel, 1)
+        main_layout.addWidget(middle_panel, 3)
+        main_layout.addWidget(right_panel, 2)  # Changed from 1 to 2 to make right panel wider
         
         self.setLayout(main_layout)
     
@@ -654,9 +784,21 @@ class LabelDialog(QDialog):
         if not self.image_files:
             QMessageBox.warning(self, "No Images", "No images found in the selected directory.")
             return
+        
+        # Populate the image list widget
+        self.image_list.clear()
+        for img_file in self.image_files:
+            self.image_list.addItem(img_file)
             
         self.current_image_index = -1
-        self.load_next_image()
+        if self.image_files:
+            self.image_list.setCurrentRow(0)
+            self.load_image(0)
+    
+    def on_image_selected(self, item):
+        index = self.image_list.row(item)
+        if index >= 0 and index < len(self.image_files):
+            self.load_image(index)
     
     def load_image(self, index):
         if 0 <= index < len(self.image_files):
@@ -682,9 +824,13 @@ class LabelDialog(QDialog):
                     pass
             
             self.update_display()
-            self.update_box_list()
+            self.update_box_table()
             
             self.setWindowTitle(f"Image Labeling Tool - {self.image_files[index]} ({index+1}/{len(self.image_files)})")
+            
+            # Highlight the current image in the list
+            if self.image_list.currentRow() != index:
+                self.image_list.setCurrentRow(index)
     
     def load_next_image(self):
         if self.current_image_index < len(self.image_files) - 1:
@@ -694,6 +840,25 @@ class LabelDialog(QDialog):
         if self.current_image_index > 0:
             self.load_image(self.current_image_index - 1)
     
+    def scale_image_to_fit(self, img, max_width, max_height):
+        """Scale image to fit within the given dimensions while maintaining aspect ratio"""
+        h, w = img.shape[:2]
+        
+        # Calculate scaling factor
+        scale_w = max_width / w if w > max_width else 1
+        scale_h = max_height / h if h > max_height else 1
+        scale = min(scale_w, scale_h)
+        
+        # If image is already smaller than max dimensions, don't scale up
+        if scale >= 1:
+            return img
+            
+        new_width = int(w * scale)
+        new_height = int(h * scale)
+        
+        # Resize image
+        return cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    
     def update_display(self):
         if self.current_image is None:
             return
@@ -702,25 +867,101 @@ class LabelDialog(QDialog):
         display_image = self.current_image.copy()
         
         # Draw existing bounding boxes
-        for box in self.bounding_boxes:
+        for i, box in enumerate(self.bounding_boxes):
             x1, y1, x2, y2, class_name = box
-            cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(display_image, class_name, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # Use pure red for all boxes (0,0,255) in BGR format
+            color = (0, 0, 255)  # Pure red in BGR
+            
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(display_image, class_name, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         
-        # Draw the current box being created
+        # Draw the current box being created - also in pure red
         if self.drawing and self.current_box:
             x1, y1, x2, y2 = self.current_box
-            cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Pure red for box being drawn
+        
+        # Scale image to fit in label
+        max_width = self.image_label.width()
+        max_height = self.image_label.height()
+        display_image = self.scale_image_to_fit(display_image, max_width, max_height)
         
         # Convert to QImage and display
         h, w, c = display_image.shape
-        qimg = QImage(display_image.data, w, h, w * c, QImage.Format.Format_RGB888)
+        bytes_per_line = c * w
+        qimg = QImage(display_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.image_label.setPixmap(QPixmap.fromImage(qimg))
     
-    def update_box_list(self):
-        self.box_list.clear()
+    def update_box_table(self):
+        self.box_table.setRowCount(0)
+        
+        if self.current_image is None:
+            return  # Don't update if no image is loaded
+            
+        image_height, image_width = self.current_image.shape[:2]
+        
         for i, (x1, y1, x2, y2, class_name) in enumerate(self.bounding_boxes):
-            self.box_list.addItem(f"{i+1}: {class_name} [{x1},{y1},{x2},{y2}]")
+            # Convert to YOLO format (normalized)
+            x_center = (x1 + x2) / 2 / image_width
+            y_center = (y1 + y2) / 2 / image_height
+            width = (x2 - x1) / image_width
+            height = (y2 - y1) / image_height
+            
+            row = self.box_table.rowCount()
+            self.box_table.insertRow(row)
+            
+            self.box_table.setItem(row, 0, QTableWidgetItem(class_name))
+            self.box_table.setItem(row, 1, QTableWidgetItem(f"{x_center:.4f}"))
+            self.box_table.setItem(row, 2, QTableWidgetItem(f"{y_center:.4f}"))
+            self.box_table.setItem(row, 3, QTableWidgetItem(f"{width:.4f}"))
+            self.box_table.setItem(row, 4, QTableWidgetItem(f"{height:.4f}"))
+        
+        # Connect row selection signal
+        self.box_table.itemSelectionChanged.connect(self.on_box_selection_changed)
+
+    def on_box_selection_changed(self):
+        selected_rows = self.box_table.selectionModel().selectedRows()
+        if selected_rows:
+            self.selected_box_index = selected_rows[0].row()
+        else:
+            self.selected_box_index = -1
+        self.update_display()
+    
+    def select_box(self, row):
+        # Allow editing of selected box
+        if 0 <= row < len(self.bounding_boxes):
+            self.selected_box_index = row
+            # Select the row in the table
+            self.box_table.selectRow(row)
+            self.update_display()
+    
+    def pixel_to_yolo(self, x1, y1, x2, y2):
+        """Convert pixel coordinates to YOLO format"""
+        if self.current_image is None:
+            return 0, 0, 0, 0
+            
+        image_height, image_width = self.current_image.shape[:2]
+        
+        x_center = (x1 + x2) / 2 / image_width
+        y_center = (y1 + y2) / 2 / image_height
+        width = (x2 - x1) / image_width
+        height = (y2 - y1) / image_height
+        
+        return x_center, y_center, width, height
+    
+    def yolo_to_pixel(self, x_center, y_center, width, height):
+        """Convert YOLO format to pixel coordinates"""
+        if self.current_image is None:
+            return 0, 0, 0, 0
+            
+        image_height, image_width = self.current_image.shape[:2]
+        
+        x1 = int((x_center - width/2) * image_width)
+        y1 = int((y_center - height/2) * image_height)
+        x2 = int((x_center + width/2) * image_width)
+        y2 = int((y_center + height/2) * image_height)
+        
+        return x1, y1, x2, y2
     
     def mouse_press(self, event):
         if not self.current_image_path:
@@ -731,9 +972,17 @@ class LabelDialog(QDialog):
         self.end_point = event.position()
         
         # Convert QPoint to integer coordinates
+        # Need to account for image scaling
         x = int(self.start_point.x())
         y = int(self.start_point.y())
+        
+        # Convert screen coordinates to original image coordinates
+        x, y = self.screen_to_image_coords(x, y)
+        
         self.current_box = (x, y, x, y)
+        
+        # Update the display immediately to show the starting point
+        self.update_display()
     
     def mouse_move(self, event):
         if self.drawing:
@@ -744,6 +993,10 @@ class LabelDialog(QDialog):
             y1 = int(self.start_point.y())
             x2 = int(self.end_point.x())
             y2 = int(self.end_point.y())
+            
+            # Convert screen coordinates to original image coordinates
+            x1, y1 = self.screen_to_image_coords(x1, y1)
+            x2, y2 = self.screen_to_image_coords(x2, y2)
             
             self.current_box = (x1, y1, x2, y2)
             self.update_display()
@@ -759,6 +1012,10 @@ class LabelDialog(QDialog):
             x2 = int(self.end_point.x())
             y2 = int(self.end_point.y())
             
+            # Convert screen coordinates to original image coordinates
+            x1, y1 = self.screen_to_image_coords(x1, y1)
+            x2, y2 = self.screen_to_image_coords(x2, y2)
+            
             # Ensure x1,y1 is the top-left and x2,y2 is the bottom-right
             x1, x2 = min(x1, x2), max(x1, x2)
             y1, y2 = min(y1, y2), max(y1, y2)
@@ -767,26 +1024,70 @@ class LabelDialog(QDialog):
             if x2 - x1 > 5 and y2 - y1 > 5:
                 self.bounding_boxes.append((x1, y1, x2, y2, self.current_class))
                 self.update_display()
-                self.update_box_list()
+                self.update_box_table()
             
             self.current_box = None
     
-    def select_box(self, item):
-        # Allow editing of selected box (not implemented for brevity)
-        pass
+    def screen_to_image_coords(self, x, y):
+        """Convert screen coordinates to original image coordinates"""
+        if self.current_image is None:
+            return x, y
+        
+        # Get displayed image dimensions
+        pixmap = self.image_label.pixmap()
+        if (pixmap and not pixmap.isNull()):
+            disp_width = pixmap.width()
+            disp_height = pixmap.height()
+            
+            # Calculate the position of the image within the label
+            label_width = self.image_label.width()
+            label_height = self.image_label.height()
+            
+            # Calculate the offset (if image is centered in the label)
+            offset_x = (label_width - disp_width) / 2
+            offset_y = (label_height - disp_height) / 2
+            
+            # Adjust coordinates by the offset
+            x = x - offset_x
+            y = y - offset_y
+            
+            # If point is outside the image, clamp it to the image boundaries
+            if x < 0: x = 0
+            if y < 0: y = 0
+            if x >= disp_width: x = disp_width - 1
+            if y >= disp_height: y = disp_height - 1
+            
+            # Get original image dimensions
+            orig_height, orig_width = self.current_image.shape[:2]
+            
+            # Calculate scaling factors
+            scale_x = orig_width / disp_width
+            scale_y = orig_height / disp_height
+            
+            # Convert coordinates
+            x = int(x * scale_x)
+            y = int(y * scale_y)
+        
+        return x, y
+    
+    def select_box(self, row):
+        # Allow editing of selected box
+        if 0 <= row < len(self.bounding_boxes):
+            # Highlight the selected box in the display
+            self.update_display()
     
     def remove_selected_box(self):
-        selected_items = self.box_list.selectedItems()
-        if not selected_items:
-            return
-            
-        for item in selected_items:
-            index = self.box_list.row(item)
-            if 0 <= index < len(self.bounding_boxes):
-                self.bounding_boxes.pop(index)
+        selected_rows = set()
+        for item in self.box_table.selectedItems():
+            selected_rows.add(item.row())
+        
+        # Remove rows in reverse order to avoid index shifting
+        for row in sorted(selected_rows, reverse=True):
+            if 0 <= row < len(self.bounding_boxes):
+                self.bounding_boxes.pop(row)
         
         self.update_display()
-        self.update_box_list()
+        self.update_box_table()
     
     def update_current_class(self, class_name):
         self.current_class = class_name
@@ -807,74 +1108,77 @@ class LabelDialog(QDialog):
                 self.current_class = self.classes[0]
     
     def save_annotations(self):
-        if not self.current_image_path or not self.bounding_boxes:
+        if not self.current_image_path:
+            QMessageBox.warning(self, "Warning", "No image loaded.")
             return
             
-        # Save annotations in JSON format
-        annotation_file = os.path.splitext(self.current_image_path)[0] + ".json"
+        # No check for empty bounding_boxes - we allow saving even when all boxes are deleted
+        
         try:
+            # Save annotations in JSON format
+            annotation_file = os.path.splitext(self.current_image_path)[0] + ".json"
+            os.makedirs(os.path.dirname(annotation_file), exist_ok=True)
+            
             with open(annotation_file, 'w') as f:
                 json.dump(self.bounding_boxes, f)
-            QMessageBox.information(self, "Success", f"Saved annotations to {annotation_file}")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Error saving annotations: {str(e)}")
-    
-    def prepare_training_data(self):
-        if not self.output_dir:
-            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
-            return
-        
-        # Create YOLO dataset structure
-        dataset_dir = os.path.join(self.output_dir, "yolo_dataset")
-        os.makedirs(dataset_dir, exist_ok=True)
-        
-        # Create train, val directories
-        train_dir = os.path.join(dataset_dir, "train")
-        val_dir = os.path.join(dataset_dir, "val")
-        os.makedirs(train_dir, exist_ok=True)
-        os.makedirs(val_dir, exist_ok=True)
-        
-        # Create images and labels subdirectories
-        for d in [train_dir, val_dir]:
-            os.makedirs(os.path.join(d, "images"), exist_ok=True)
-            os.makedirs(os.path.join(d, "labels"), exist_ok=True)
-        
-        # Copy images and annotations
-        # TODO: Implement actual data preparation
-        
-        # Create dataset.yaml
-        with open(os.path.join(dataset_dir, "dataset.yaml"), "w") as f:
-            f.write(f"path: {dataset_dir}\n")
-            f.write(f"train: train/images\n")
-            f.write(f"val: val/images\n\n")
-            f.write(f"nc: {len(self.classes)}\n")
-            f.write(f"names: {self.classes}\n")
-        
-        self.training_status.setText("Training data prepared")
-        QMessageBox.information(self, "Data Prepared", "YOLO training data has been prepared.")
-    
-    def start_yolo_training(self):
-        if not self.output_dir:
-            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
-            return
+                
+            # Also save in YOLO format
+            yolo_file = os.path.splitext(self.current_image_path)[0] + ".txt"
+            os.makedirs(os.path.dirname(yolo_file), exist_ok=True)
             
-        dataset_yaml = os.path.join(self.output_dir, "yolo_dataset", "dataset.yaml")
-        if not os.path.exists(dataset_yaml):
-            QMessageBox.warning(self, "Missing Dataset", "Please prepare the training data first.")
-            return
-        
-        # Configure YOLO trainer
-        yolo_config = self.config.get("yolo", {})
-        yolo_config["epochs"] = int(self.epochs_input.currentText())
-        yolo_config["batch_size"] = int(self.batch_size_input.currentText())
-        
-        trainer = YOLOTrainer(yolo_config)
-        
-        # Start training in a separate thread
-        self.training_status.setText("Training started...")
-        # TODO: Implement actual training in a thread
-        
-        QMessageBox.information(self, "Training Started", 
-                              f"YOLO training started with {yolo_config['epochs']} epochs.\n"
-                              f"Results will be saved to {self.output_dir}/yolo_training")
-
+            # Check if we have a valid image
+            if self.current_image is None:
+                QMessageBox.warning(self, "Error", "Image data is missing.")
+                return
+                
+            # Get image dimensions for YOLO normalization
+            image_height, image_width = self.current_image.shape[:2]
+            if image_height <= 0 or image_width <= 0:
+                QMessageBox.warning(self, "Error", "Invalid image dimensions.")
+                return
+                
+            with open(yolo_file, 'w') as f:
+                for x1, y1, x2, y2, class_name in self.bounding_boxes:
+                    # Get class index with better error handling
+                    try:
+                        class_idx = self.classes.index(class_name)
+                    except ValueError:
+                        # If class not found, use first class or create an "unknown" class
+                        if "unknown" in self.classes:
+                            class_idx = self.classes.index("unknown")
+                        elif self.classes:
+                            class_idx = 0  # Default to first class if not found
+                        else:
+                            # No classes defined, create a default
+                            self.classes = ["unknown"]
+                            self.class_combo.clear()
+                            self.class_combo.addItems(self.classes)
+                            class_idx = 0
+                    
+                    # Convert to YOLO format (ensure proper normalization)
+                    # Make sure coordinates are within image bounds
+                    x1 = max(0, min(image_width-1, x1))
+                    y1 = max(0, min(image_height-1, y1))
+                    x2 = max(0, min(image_width-1, x2))
+                    y2 = max(0, min(image_height-1, y2))
+                    
+                    # Calculate normalized values
+                    x_center = (x1 + x2) / 2 / image_width
+                    y_center = (y1 + y2) / 2 / image_height
+                    width = abs(x2 - x1) / image_width
+                    height = abs(y2 - y1) / image_height
+                    
+                    # Ensure values are within [0,1] range
+                    x_center = max(0, min(1, x_center))
+                    y_center = max(0, min(1, y_center))
+                    width = max(0, min(1, width))
+                    height = max(0, min(1, height))
+                    
+                    # Write to file
+                    f.write(f"{class_idx} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
+                
+            QMessageBox.information(self, "Success", f"Saved annotations to {annotation_file} and {yolo_file}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error saving annotations: {str(e)}")
+            import traceback
+            traceback.print_exc()  # Print the full stack trace for debugging

@@ -147,16 +147,6 @@ class MainWindow(QMainWindow):
         self.video_player = VideoPlayer()
         left_layout.addWidget(self.video_player)
         
-        # Video controls and progress
-        control_layout = QHBoxLayout()
-        self.btn_play_pause = QPushButton("Play")
-        self.btn_play_pause.clicked.connect(self.toggle_video_playback)
-        control_layout.addWidget(self.btn_play_pause)
-        
-        self.progress_bar = QProgressBar()
-        control_layout.addWidget(self.progress_bar)
-        left_layout.addLayout(control_layout)
-        
         # Add left panel to splitter
         self.main_splitter.addWidget(left_widget)
         
@@ -323,7 +313,6 @@ class MainWindow(QMainWindow):
         )
         if self.video_path:
             self.video_player.load_video(self.video_path)
-            self.btn_play_pause.setText("Play")
             QMessageBox.information(self, "Video Loaded", f"Video loaded: {os.path.basename(self.video_path)}")
     
     def load_images(self):
@@ -351,10 +340,8 @@ class MainWindow(QMainWindow):
     def toggle_video_playback(self):
         if self.video_player.is_playing():
             self.video_player.pause()
-            self.btn_play_pause.setText("Play")
         else:
             self.video_player.play()
-            self.btn_play_pause.setText("Pause")
     
     def update_video_display(self):
         # Update the video display with overlay annotations
@@ -870,16 +857,22 @@ class LabelDialog(QDialog):
         for i, box in enumerate(self.bounding_boxes):
             x1, y1, x2, y2, class_name = box
             
-            # Use pure red for all boxes (0,0,255) in BGR format
-            color = (0, 0, 255)  # Pure red in BGR
+            # Use pure blue for normal boxes and pure red for selected box
+            if i == self.selected_box_index:
+                color = (255, 0, 0)  # Pure red in RGB
+                thickness = 3  # Thicker for selected box
+            else:
+                color = (0, 0, 255)  # Pure blue in RGB
+                thickness = 2
             
-            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(display_image, class_name, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, thickness)
+            # Increased text size from 0.5 to 0.8, increased thickness from 1 to 2
+            cv2.putText(display_image, class_name, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         
         # Draw the current box being created - also in pure red
         if self.drawing and self.current_box:
             x1, y1, x2, y2 = self.current_box
-            cv2.rectangle(display_image, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Pure red for box being drawn
+            cv2.rectangle(display_image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Pure red for box being drawn
         
         # Scale image to fit in label
         max_width = self.image_label.width()
@@ -933,147 +926,6 @@ class LabelDialog(QDialog):
             self.selected_box_index = row
             # Select the row in the table
             self.box_table.selectRow(row)
-            self.update_display()
-    
-    def pixel_to_yolo(self, x1, y1, x2, y2):
-        """Convert pixel coordinates to YOLO format"""
-        if self.current_image is None:
-            return 0, 0, 0, 0
-            
-        image_height, image_width = self.current_image.shape[:2]
-        
-        x_center = (x1 + x2) / 2 / image_width
-        y_center = (y1 + y2) / 2 / image_height
-        width = (x2 - x1) / image_width
-        height = (y2 - y1) / image_height
-        
-        return x_center, y_center, width, height
-    
-    def yolo_to_pixel(self, x_center, y_center, width, height):
-        """Convert YOLO format to pixel coordinates"""
-        if self.current_image is None:
-            return 0, 0, 0, 0
-            
-        image_height, image_width = self.current_image.shape[:2]
-        
-        x1 = int((x_center - width/2) * image_width)
-        y1 = int((y_center - height/2) * image_height)
-        x2 = int((x_center + width/2) * image_width)
-        y2 = int((y_center + height/2) * image_height)
-        
-        return x1, y1, x2, y2
-    
-    def mouse_press(self, event):
-        if not self.current_image_path:
-            return
-            
-        self.drawing = True
-        self.start_point = event.position()
-        self.end_point = event.position()
-        
-        # Convert QPoint to integer coordinates
-        # Need to account for image scaling
-        x = int(self.start_point.x())
-        y = int(self.start_point.y())
-        
-        # Convert screen coordinates to original image coordinates
-        x, y = self.screen_to_image_coords(x, y)
-        
-        self.current_box = (x, y, x, y)
-        
-        # Update the display immediately to show the starting point
-        self.update_display()
-    
-    def mouse_move(self, event):
-        if self.drawing:
-            self.end_point = event.position()
-            
-            # Convert QPoint to integer coordinates
-            x1 = int(self.start_point.x())
-            y1 = int(self.start_point.y())
-            x2 = int(self.end_point.x())
-            y2 = int(self.end_point.y())
-            
-            # Convert screen coordinates to original image coordinates
-            x1, y1 = self.screen_to_image_coords(x1, y1)
-            x2, y2 = self.screen_to_image_coords(x2, y2)
-            
-            self.current_box = (x1, y1, x2, y2)
-            self.update_display()
-    
-    def mouse_release(self, event):
-        if self.drawing:
-            self.end_point = event.position()
-            self.drawing = False
-            
-            # Convert QPoint to integer coordinates
-            x1 = int(self.start_point.x())
-            y1 = int(self.start_point.y())
-            x2 = int(self.end_point.x())
-            y2 = int(self.end_point.y())
-            
-            # Convert screen coordinates to original image coordinates
-            x1, y1 = self.screen_to_image_coords(x1, y1)
-            x2, y2 = self.screen_to_image_coords(x2, y2)
-            
-            # Ensure x1,y1 is the top-left and x2,y2 is the bottom-right
-            x1, x2 = min(x1, x2), max(x1, x2)
-            y1, y2 = min(y1, y2), max(y1, y2)
-            
-            # Only add if the box has some area
-            if x2 - x1 > 5 and y2 - y1 > 5:
-                self.bounding_boxes.append((x1, y1, x2, y2, self.current_class))
-                self.update_display()
-                self.update_box_table()
-            
-            self.current_box = None
-    
-    def screen_to_image_coords(self, x, y):
-        """Convert screen coordinates to original image coordinates"""
-        if self.current_image is None:
-            return x, y
-        
-        # Get displayed image dimensions
-        pixmap = self.image_label.pixmap()
-        if (pixmap and not pixmap.isNull()):
-            disp_width = pixmap.width()
-            disp_height = pixmap.height()
-            
-            # Calculate the position of the image within the label
-            label_width = self.image_label.width()
-            label_height = self.image_label.height()
-            
-            # Calculate the offset (if image is centered in the label)
-            offset_x = (label_width - disp_width) / 2
-            offset_y = (label_height - disp_height) / 2
-            
-            # Adjust coordinates by the offset
-            x = x - offset_x
-            y = y - offset_y
-            
-            # If point is outside the image, clamp it to the image boundaries
-            if x < 0: x = 0
-            if y < 0: y = 0
-            if x >= disp_width: x = disp_width - 1
-            if y >= disp_height: y = disp_height - 1
-            
-            # Get original image dimensions
-            orig_height, orig_width = self.current_image.shape[:2]
-            
-            # Calculate scaling factors
-            scale_x = orig_width / disp_width
-            scale_y = orig_height / disp_height
-            
-            # Convert coordinates
-            x = int(x * scale_x)
-            y = int(y * scale_y)
-        
-        return x, y
-    
-    def select_box(self, row):
-        # Allow editing of selected box
-        if 0 <= row < len(self.bounding_boxes):
-            # Highlight the selected box in the display
             self.update_display()
     
     def remove_selected_box(self):
@@ -1182,3 +1034,108 @@ class LabelDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Error saving annotations: {str(e)}")
             import traceback
             traceback.print_exc()  # Print the full stack trace for debugging
+            
+    def get_adjusted_mouse_position(self, position):
+        """
+        Adjust mouse position to account for image scaling within the label
+        """
+        if self.current_image is None:
+            return position
+            
+        pixmap = self.image_label.pixmap()
+        if pixmap is None:
+            return position
+            
+        # Calculate scaling factors
+        image_height, image_width = self.current_image.shape[:2]
+        pixmap_width = pixmap.width()
+        pixmap_height = pixmap.height()
+        
+        # Calculate the position of the image within the label
+        label_width = self.image_label.width()
+        label_height = self.image_label.height()
+        x_offset = (label_width - pixmap_width) / 2
+        y_offset = (label_height - pixmap_height) / 2
+        
+        # Adjust mouse position
+        mouse_x = position.x() - x_offset
+        mouse_y = position.y() - y_offset
+        
+        # Scale back to original image coordinates
+        if pixmap_width > 0 and pixmap_height > 0:
+            scale_x = image_width / pixmap_width
+            scale_y = image_height / pixmap_height
+            mouse_x = max(0, min(image_width, mouse_x * scale_x))
+            mouse_y = max(0, min(image_height, mouse_y * scale_y))
+            
+        return QPoint(int(mouse_x), int(mouse_y))
+
+    def mouse_press(self, event):
+        """Handle mouse press event for starting a bounding box or selecting/deselecting boxes"""
+        if self.current_image is None:
+            return
+            
+        # Get position adjusted for any scaling
+        pos = self.get_adjusted_mouse_position(event.position())
+        
+        # Check if we clicked inside an existing box
+        clicked_box_index = -1
+        for i, (x1, y1, x2, y2, _) in enumerate(self.bounding_boxes):
+            if x1 <= pos.x() <= x2 and y1 <= pos.y() <= y2:
+                clicked_box_index = i
+                break
+        
+        # If clicked on a box, select it
+        if clicked_box_index >= 0:
+            self.select_box(clicked_box_index)
+            return
+        else:
+            # If clicked on empty area, deselect current box
+            self.selected_box_index = -1
+            self.box_table.clearSelection()
+        
+        # Start drawing a new box
+        self.drawing = True
+        self.start_point = pos
+        self.end_point = pos
+        self.current_box = (pos.x(), pos.y(), pos.x(), pos.y())
+        self.update_display()
+    
+    def mouse_move(self, event):
+        """Handle mouse move event for updating the bounding box during drawing"""
+        if not self.drawing or self.current_image is None:
+            return
+            
+        # Get position adjusted for any scaling
+        pos = self.get_adjusted_mouse_position(event.position())
+        
+        self.end_point = pos
+        self.current_box = (self.start_point.x(), self.start_point.y(), pos.x(), pos.y())
+        self.update_display()
+    
+    def mouse_release(self, event):
+        """Handle mouse release event for finalizing the bounding box"""
+        if not self.drawing or self.current_image is None:
+            return
+            
+        # Get position adjusted for any scaling
+        pos = self.get_adjusted_mouse_position(event.position())
+        
+        # Make sure end point is updated
+        self.end_point = pos
+        self.drawing = False
+        
+        # Create box with properly ordered coordinates (ensure x1 < x2 and y1 < y2)
+        x1 = min(self.start_point.x(), self.end_point.x())
+        y1 = min(self.start_point.y(), self.end_point.y())
+        x2 = max(self.start_point.x(), self.end_point.x())
+        y2 = max(self.start_point.y(), self.end_point.y())
+        
+        # Add box if it has a minimum size
+        if x2 - x1 > 5 and y2 - y1 > 5:
+            # Add the current class name to the box
+            self.bounding_boxes.append((x1, y1, x2, y2, self.current_class))
+            self.update_display()
+            self.update_box_table()
+        
+        self.current_box = None

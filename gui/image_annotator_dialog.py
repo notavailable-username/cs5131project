@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
                            QLabel, QPushButton, QComboBox, QFileDialog,
                            QInputDialog, QMessageBox, QTableWidget, 
-                           QTableWidgetItem, QWidget)
+                           QTableWidgetItem, QWidget, QSizePolicy, QApplication)
 from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtGui import QImage, QPixmap
 import cv2
@@ -48,21 +48,30 @@ class ImageAnnotatorDialog(QDialog):
         left_layout.addWidget(QLabel("Images:"))
         self.image_list = QListWidget()
         self.image_list.itemClicked.connect(self.on_image_selected)
+        self.image_list.setSizeAdjustPolicy(QListWidget.SizeAdjustPolicy.AdjustToContents)
+        self.image_list.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
         left_layout.addWidget(self.image_list)
+        
+        # Make left panel fit exactly to content size
+        left_panel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        left_layout.setContentsMargins(5, 5, 5, 5)  # Compact margins
         
         # Middle panel - image viewer
         middle_panel = QWidget()
         middle_layout = QVBoxLayout(middle_panel)
         
-        # Image display label (no scroll area)
+        # Image display label with flexible size - remove fixed width constraint
         self.image_label = QLabel("No image loaded")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(800, 600)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumWidth(400)  # Minimum width instead of fixed
+        self.image_label.setMinimumHeight(400)  # Minimum height
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.image_label.mousePressEvent = self.mouse_press
         self.image_label.mouseMoveEvent = self.mouse_move
         self.image_label.mouseReleaseEvent = self.mouse_release
         
-        middle_layout.addWidget(self.image_label)
+        middle_layout.addWidget(self.image_label, 1)  # Add stretch factor to fill available height
+        middle_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Right panel - controls
         right_panel = QWidget()
@@ -95,6 +104,8 @@ class ImageAnnotatorDialog(QDialog):
         self.box_table = QTableWidget(0, 5)
         self.box_table.setHorizontalHeaderLabels(["Class", "X", "Y", "Width", "Height"])
         self.box_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # Make table non-editable
+        self.box_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         right_layout.addWidget(self.box_table)
         
         # Remove box button
@@ -115,10 +126,10 @@ class ImageAnnotatorDialog(QDialog):
         right_layout.addWidget(self.btn_done)
         right_layout.addStretch()
         
-        # Add all panels to main layout
-        main_layout.addWidget(left_panel, 1)
-        main_layout.addWidget(middle_panel, 3)
-        main_layout.addWidget(right_panel, 2)  # Changed from 1 to 2 to make right panel wider
+        # Add all panels to main layout with appropriate stretch factors
+        main_layout.addWidget(left_panel, 0)   # No horizontal stretch for left panel
+        main_layout.addWidget(middle_panel, 3)  # Give middle panel horizontal stretch to fit images
+        main_layout.addWidget(right_panel, 1)   # Right panel gets all remaining space
         
         self.setLayout(main_layout)
     
@@ -148,7 +159,7 @@ class ImageAnnotatorDialog(QDialog):
         if self.image_files:
             self.image_list.setCurrentRow(0)
             self.load_image(0)
-    
+            
     def on_image_selected(self, item):
         index = self.image_list.row(item)
         if index >= 0 and index < len(self.image_files):
@@ -185,6 +196,9 @@ class ImageAnnotatorDialog(QDialog):
             # Highlight the current image in the list
             if self.image_list.currentRow() != index:
                 self.image_list.setCurrentRow(index)
+                
+            # Force layout update
+            QApplication.processEvents()
     
     def load_next_image(self):
         if self.current_image_index < len(self.image_files) - 1:
@@ -198,9 +212,13 @@ class ImageAnnotatorDialog(QDialog):
         """Scale image to fit within the given dimensions while maintaining aspect ratio"""
         h, w = img.shape[:2]
         
+        # Use actual label dimensions instead of hardcoded width
+        max_display_width = max_width
+        max_display_height = max_height
+        
         # Calculate scaling factor
-        scale_w = max_width / w if w > max_width else 1
-        scale_h = max_height / h if h > max_height else 1
+        scale_w = max_display_width / w if w > max_display_width else 1
+        scale_h = max_display_height / h if h > max_display_height else 1
         scale = min(scale_w, scale_h)
         
         # If image is already smaller than max dimensions, don't scale up

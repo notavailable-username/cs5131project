@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget, QPushButton, 
     QFileDialog, QListWidget, QLabel, QMessageBox, QProgressBar, QComboBox,
-    QDockWidget, QStackedLayout, QSplitter, QTableWidget, QTableWidgetItem
+    QDockWidget, QStackedLayout, QSplitter, QTableWidget, QTableWidgetItem,
+    QGroupBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget,
 class VideoProcessThread(QThread):
     update_progress = pyqtSignal(int)
     update_frame = pyqtSignal(object)
+    update_frame_number = pyqtSignal(int)  # New signal for frame number updates
     detection_complete = pyqtSignal(list, list)
     
     def __init__(self, video_path, motion_detector, few_shot, parent=None):
@@ -46,13 +48,16 @@ class VideoProcessThread(QThread):
         while cap.isOpened() and self.running:
             ret, frame = cap.read()
             if not ret:
+                # Make sure we signal 100% progress when finished
+                self.update_progress.emit(100)
                 break
                 
             # Process every nth frame
             if frame_count % frame_interval == 0:
-                # Update progress
-                progress = int(100 * frame_count / total_frames)
+                # Update progress and frame number - calculate progress correctly
+                progress = min(100, int(100 * frame_count / (total_frames - 1)))
                 self.update_progress.emit(progress)
+                self.update_frame_number.emit(frame_count)
                 
                 # Send frame to GUI for display
                 self.update_frame.emit(frame.copy())
@@ -75,12 +80,12 @@ class VideoProcessThread(QThread):
                             patch = frame[y1:y2, x1:x2]
                             label, conf = self.few_shot.predict(patch)
                             
-                            # Record detection 
+                            # Record detection with actual confidence
                             detection = {
                                 'frame_idx': frame_count,
                                 'bbox': box,
                                 'class': label,
-                                'confidence': conf,
+                                'confidence': float(conf),  # Ensure confidence is a float
                                 'timestamp': frame_count / fps
                             }
                             frame_detections.append(detection)
@@ -124,13 +129,22 @@ class MainWindow(QMainWindow):
         
         # Data storage
         self.video_path = None
-        self.output_dir = None
         self.all_detections = []
         self.uncertain_frames = []
         self.support_examples = {}  # {class_name: [image_patches]}
         self.classes = []
         
+        # Create base directories
+        self.datasets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
+        self.annotations_dir = os.path.join(self.datasets_dir, "annotations")
+        os.makedirs(self.annotations_dir, exist_ok=True)
+        
+        # Create directory for uncertain frames
+        self.uncertain_dir = os.path.join(self.datasets_dir, "uncertain", "motion_detector")
+        os.makedirs(self.uncertain_dir, exist_ok=True)
+        
         self.process_thread = None
+        self.detection_running = False
         
         self._init_ui()
     
@@ -203,12 +217,7 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
-        # Output directory selection
-        select_output_action = file_menu.addAction("Select Output Directory")
-        select_output_action.triggered.connect(self.select_output_dir)
-        
         # Exit action
-        file_menu.addSeparator()
         exit_action = file_menu.addAction("Exit")
         exit_action.triggered.connect(self.close)
         
@@ -219,7 +228,35 @@ class MainWindow(QMainWindow):
         manage_classes_action = edit_menu.addAction("Manage Classes")
         manage_classes_action.triggered.connect(self.manage_classes)
     
-    # Remove the _create_import_tab method as it's no longer needed
+    # Helper methods for directory management
+    def get_video_name(self):
+        """Get the name of the current video without extension"""
+        if not self.video_path:
+            return None
+        return os.path.splitext(os.path.basename(self.video_path))[0]
+    
+    def get_annotations_dir_for_current_video(self):
+        """Get the annotations directory for the current video"""
+        video_name = self.get_video_name()
+        if not video_name:
+            return None
+        video_ann_dir = os.path.join(self.annotations_dir, video_name)
+        os.makedirs(video_ann_dir, exist_ok=True)
+        return video_ann_dir
+    
+    def get_frame_path(self, frame_idx, subdir=None):
+        """Get path for saving a frame"""
+        video_name = self.get_video_name()
+        if not video_name:
+            return None
+            
+        if subdir:
+            directory = os.path.join(self.datasets_dir, subdir, video_name)
+        else:
+            directory = os.path.join(self.annotations_dir, video_name)
+            
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, f"frame_{frame_idx:06d}")
     
     def import_video(self):
         """Import a single video file to datasets/videos"""
@@ -344,25 +381,58 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout()
         
-        # Motion detection
-        btn_run_detection = QPushButton("Run Motion Detection")
-        btn_run_detection.clicked.connect(self.run_motion_detection)
-        layout.addWidget(btn_run_detection)
+        # Group 1: Motion detection settings
+        settings_group = QGroupBox("Detection Settings")
+        settings_layout = QVBoxLayout()
         
         # Detection settings
         self.detection_threshold = QComboBox()
         self.detection_threshold.addItems(["Low", "Medium", "High"])
         self.detection_threshold.setCurrentIndex(1)
-        layout.addWidget(QLabel("Detection Sensitivity:"))
-        layout.addWidget(self.detection_threshold)
+        settings_layout.addWidget(QLabel("Detection Sensitivity:"))
+        settings_layout.addWidget(self.detection_threshold)
+        
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
+        
+        # Group 2: Detection controls
+        controls_group = QGroupBox("Controls")
+        controls_layout = QVBoxLayout()
+        
+        # Motion detection button
+        self.btn_run_detection = QPushButton("Run Motion Detection")
+        self.btn_run_detection.clicked.connect(self.run_motion_detection)
+        controls_layout.addWidget(self.btn_run_detection)
+        
+        # Abort detection button
+        self.btn_abort_detection = QPushButton("Abort Detection")
+        self.btn_abort_detection.clicked.connect(self.abort_motion_detection)
+        self.btn_abort_detection.setEnabled(False)
+        controls_layout.addWidget(self.btn_abort_detection)
         
         # Progress indicator
         self.detection_progress = QProgressBar()
-        layout.addWidget(self.detection_progress)
+        controls_layout.addWidget(self.detection_progress)
+        
+        # Frame number display
+        self.frame_number_label = QLabel("Current frame: -")
+        controls_layout.addWidget(self.frame_number_label)
+        
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
         
         # Results summary
+        results_group = QGroupBox("Results")
+        results_layout = QVBoxLayout()
+        
         self.detection_summary = QLabel("No detections yet")
-        layout.addWidget(self.detection_summary)
+        results_layout.addWidget(self.detection_summary)
+        
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
+        # Add stretch to improve spacing
+        layout.addStretch()
         
         widget.setLayout(layout)
         return widget
@@ -455,16 +525,7 @@ class MainWindow(QMainWindow):
     def load_images(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Image Directory")
         if directory:
-            # TODO: Implementation for handling image directories
-            self.output_dir = directory
-            self.output_dir_label.setText(f"Output directory: {directory}")
             QMessageBox.information(self, "Directory Selected", f"Image directory: {directory}")
-    
-    def select_output_dir(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if directory:
-            self.output_dir = directory
-            self.output_dir_label.setText(f"Output directory: {directory}")
     
     def manage_classes(self):
         # Open the class management dialog (similar to LabelingTool class functionality)
@@ -485,9 +546,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'current_frame') and self.current_frame is not None:
             self.video_player.set_frame(self.current_frame)
     
+    def toggle_ui_during_detection(self, is_running):
+        """Enable/disable UI components during detection process"""
+        self.detection_running = is_running
+        
+        # Toggle detection buttons
+        self.btn_run_detection.setEnabled(not is_running)
+        self.btn_abort_detection.setEnabled(is_running)
+        self.detection_threshold.setEnabled(not is_running)
+        
+        # Disable/enable tabs except detection tab
+        for i in range(self.tabs.count()):
+            if i != 0:  # Detection tab is index 0
+                self.tabs.setTabEnabled(i, not is_running)
+        
+        # Disable/enable menu actions
+        for action in self.menuBar().actions():
+            action.setEnabled(not is_running)
+        
+        # Disable all buttons in video player directly
+        if hasattr(self.video_player, 'findChildren'):
+            for btn in self.video_player.findChildren(QPushButton):
+                btn.setEnabled(not is_running)
+    
     def run_motion_detection(self):
-        if not self.video_path or not self.output_dir:
-            QMessageBox.warning(self, "Missing Input", "Please select both a video and output directory.")
+        if not self.video_path:
+            QMessageBox.warning(self, "Missing Input", "Please select a video first.")
             return
         
         # Update motion detector settings based on UI
@@ -499,16 +583,27 @@ class MainWindow(QMainWindow):
         elif sensitivity == "High":
             self.motion_detector.varThreshold = 10
         
+        # Clean up any previous detection results
+        self.clean_detection_files()
+        
+        # Disable UI controls during detection
+        self.toggle_ui_during_detection(True)
+        
         # Start processing thread
         self.process_thread = VideoProcessThread(
             self.video_path, self.motion_detector, self.few_shot
         )
         self.process_thread.update_progress.connect(self.detection_progress.setValue)
         self.process_thread.update_frame.connect(self.update_detection_display)
+        self.process_thread.update_frame_number.connect(self.update_frame_number)
         self.process_thread.detection_complete.connect(self.handle_detection_complete)
         
         self.detection_progress.setValue(0)
         self.process_thread.start()
+    
+    def update_frame_number(self, frame_number):
+        """Update the frame number display"""
+        self.frame_number_label.setText(f"Current frame: {frame_number}")
     
     def update_detection_display(self, frame):
         self.current_frame = frame
@@ -529,6 +624,9 @@ class MainWindow(QMainWindow):
         self.all_detections = all_detections
         self.uncertain_frames = uncertain_frames
         
+        # Re-enable UI controls after detection completes
+        self.toggle_ui_during_detection(False)
+        
         # Update the UI
         self.detection_summary.setText(f"Detected {len(all_detections)} objects in {len(set([d['frame_idx'] for d in all_detections]))} frames")
         
@@ -537,8 +635,11 @@ class MainWindow(QMainWindow):
         for frame_idx, _ in uncertain_frames:
             self.uncertain_frames_list.addItem(f"Frame {frame_idx}")
         
-        # Save detection results
+        # Save detection results (bounding boxes as txt instead of images)
         self.save_detection_results()
+        
+        # Save uncertain frames to the designated directory
+        self.save_uncertain_frames()
         
         QMessageBox.information(self, "Detection Complete", 
                               f"Motion detection completed.\n"
@@ -546,23 +647,66 @@ class MainWindow(QMainWindow):
                               f"Uncertain frames: {len(uncertain_frames)}")
     
     def save_detection_results(self):
-        if not self.output_dir:
+        if not self.video_path or not self.all_detections:
+            return
+        
+        video_name = self.get_video_name()
+        annotations_dir = os.path.join(self.annotations_dir, video_name)
+        os.makedirs(annotations_dir, exist_ok=True)
+        
+        # Group detections by frame
+        detections_by_frame = {}
+        for detection in self.all_detections:
+            frame_idx = detection['frame_idx']
+            if frame_idx not in detections_by_frame:
+                detections_by_frame[frame_idx] = []
+            detections_by_frame[frame_idx].append(detection)
+        
+        # Save bounding boxes in txt format (one txt file per frame)
+        for frame_idx, frame_detections in detections_by_frame.items():
+            txt_path = os.path.join(annotations_dir, f"frame_{frame_idx:06d}.txt")
+            with open(txt_path, 'w') as f:
+                for det in frame_detections:
+                    box = det['bbox']
+                    label = det['class']
+                    conf = det.get('confidence', 0.0)  # Get confidence with fallback
+                    # Format: class_name x1 y1 x2 y2 confidence
+                    f.write(f"{label} {box[0]} {box[1]} {box[2]} {box[3]} {conf:.4f}\n")
+    
+    def save_uncertain_frames(self):
+        """Save uncertain frames' frame numbers to a text file"""
+        if not self.uncertain_frames:
             return
             
-        # Create detection directory
-        detection_dir = os.path.join(self.output_dir, "detections")
-        os.makedirs(detection_dir, exist_ok=True)
+        video_name = self.get_video_name()
+        os.makedirs(self.uncertain_dir, exist_ok=True)
         
-        # Save all detection frames
-        for i, (frame_idx, frame) in enumerate(self.uncertain_frames):
-            frame_path = os.path.join(detection_dir, f"uncertain_frame_{frame_idx}.jpg")
-            cv2.imwrite(frame_path, frame)
-    
-    def show_uncertain_frame(self, item):
-        index = self.uncertain_frames_list.row(item)
-        if index < len(self.uncertain_frames):
-            _, frame = self.uncertain_frames[index]
-            self.video_player.set_image(frame)
+        # Save frame numbers to a text file
+        uncertain_txt_path = os.path.join(self.uncertain_dir, f"{video_name}.txt")
+        with open(uncertain_txt_path, 'w') as f:
+            f.write(f"# Uncertain frames for {video_name}\n")
+            f.write(f"# Total uncertain frames: {len(self.uncertain_frames)}\n")
+            f.write(f"# Format: frame_index\n")
+            
+            for frame_idx, _ in self.uncertain_frames:
+                f.write(f"{frame_idx}\n")
+                
+            # Also save detection information for each uncertain frame
+            f.write("\n# Detection details for uncertain frames\n")
+            f.write("# Format: frame_idx class_name x1 y1 x2 y2 confidence\n")
+            
+            for frame_idx, _ in self.uncertain_frames:
+                frame_dets = [det for det in self.all_detections if det['frame_idx'] == frame_idx]
+                for det in frame_dets:
+                    box = det['bbox']
+                    label = det['class']
+                    conf = det.get('confidence', 0.0)
+                    f.write(f"{frame_idx} {label} {box[0]} {box[1]} {box[2]} {box[3]} {conf:.4f}\n")
+        
+        # Update the UI to reflect that we're using a text file instead of images
+        self.uncertain_frames_list.clear()
+        for frame_idx, _ in self.uncertain_frames:
+            self.uncertain_frames_list.addItem(f"Frame {frame_idx}")
     
     def add_support_example(self):
         # Get current class
@@ -586,6 +730,13 @@ class MainWindow(QMainWindow):
         # Update UI
         self.support_list.addItem(f"{current_class} - Example {len(self.support_examples[current_class])}")
         
+        # Save few-shot example
+        examples_dir = os.path.join(self.datasets_dir, "few_shot_examples", current_class)
+        os.makedirs(examples_dir, exist_ok=True)
+        timestamp = os.path.getmtime(self.video_path) if self.video_path else ""
+        example_path = os.path.join(examples_dir, f"example_{timestamp}_{len(self.support_examples[current_class])}.jpg")
+        cv2.imwrite(example_path, current_frame)
+        
         QMessageBox.information(self, "Example Added", 
                               f"Added support example for class '{current_class}'.\n"
                               f"Total examples for this class: {len(self.support_examples[current_class])}")
@@ -602,7 +753,11 @@ class MainWindow(QMainWindow):
         self.few_shot.train()
         
         # Re-run classification on uncertain frames
-        for i, (frame_idx, frame) in enumerate(self.uncertain_frames):
+        video_name = self.get_video_name()
+        classified_dir = os.path.join(self.datasets_dir, "classified", video_name)
+        os.makedirs(classified_dir, exist_ok=True)
+        
+        for frame_idx, frame in self.uncertain_frames:
             # Get boxes from motion detector
             boxes = self.motion_detector.detect(frame)
             
@@ -619,28 +774,27 @@ class MainWindow(QMainWindow):
                           (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
             # Save classified frame
-            classified_dir = os.path.join(self.output_dir, "classified")
-            os.makedirs(classified_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(classified_dir, f"classified_{frame_idx}.jpg"), display_frame)
+            cv2.imwrite(os.path.join(classified_dir, f"frame_{frame_idx:06d}.jpg"), display_frame)
         
         QMessageBox.information(self, "Classification Complete", 
-                              "Few-shot classification completed.\nResults saved to output directory.")
+                              "Few-shot classification completed.\nResults saved to classified directory.")
     
     def open_label_tool(self):
-        if not self.output_dir:
-            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
+        if not self.video_path:
+            QMessageBox.warning(self, "No Video Selected", "Please select a video first.")
             return
             
         # Create directory for uncertain frames if it doesn't exist
-        uncertain_dir = os.path.join(self.output_dir, "uncertain")
+        video_name = self.get_video_name()
+        uncertain_dir = os.path.join(self.datasets_dir, "uncertain", video_name)
         os.makedirs(uncertain_dir, exist_ok=True)
         
         # Save uncertain frames for labeling
-        for i, (frame_idx, frame) in enumerate(self.uncertain_frames):
-            frame_path = os.path.join(uncertain_dir, f"frame_{frame_idx}.jpg")
+        for frame_idx, frame in self.uncertain_frames:
+            frame_path = os.path.join(uncertain_dir, f"frame_{frame_idx:06d}.jpg")
             cv2.imwrite(frame_path, frame)
         
-        # Using the separated ImageAnnotatorDialog instead of LabelDialog
+        # Using the separated ImageAnnotatorDialog
         self.open_integrated_label_tool(uncertain_dir)
 
     def set_label_directory(self, directory):
@@ -670,8 +824,8 @@ class MainWindow(QMainWindow):
         Prepares and organizes data for model training.
         Collects annotations and images from the current project.
         """
-        if not self.output_dir:
-            QMessageBox.warning(self, "Warning", "Please select an output directory first.")
+        if not self.video_path:
+            QMessageBox.warning(self, "Warning", "Please select a video first.")
             return False
             
         if len(self.classes) == 0:
@@ -679,7 +833,8 @@ class MainWindow(QMainWindow):
             return False
             
         # Create training data directory structure
-        training_dir = os.path.join(self.output_dir, "training_data")
+        video_name = self.get_video_name()
+        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
         os.makedirs(training_dir, exist_ok=True)
         
         # Process annotations and organize files
@@ -708,7 +863,7 @@ class MainWindow(QMainWindow):
                         label_path = os.path.join(training_dir, f"image_{i:06d}.txt")
                         with open(label_path, 'w') as f:
                             for det in detections:
-                                class_idx = self.classes.index(det['class']) if 'class' in det else 0
+                                class_idx = self.classes.index(det['class']) if det.get('class') in self.classes else 0
                                 x, y, w, h = det['bbox']
                                 # Convert to YOLO format (normalized)
                                 height, width = frame.shape[:2]
@@ -736,11 +891,12 @@ class MainWindow(QMainWindow):
         """
         Starts the YOLO model training process with the prepared data.
         """
-        if not self.output_dir:
-            QMessageBox.warning(self, "No Output Directory", "Please select an output directory first.")
+        if not self.video_path:
+            QMessageBox.warning(self, "No Video Selected", "Please select a video first.")
             return
-            
-        training_dir = os.path.join(self.output_dir, "training_data")
+        
+        video_name = self.get_video_name()
+        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
         if not os.path.exists(training_dir) or not os.listdir(training_dir):
             QMessageBox.warning(self, "Missing Data", "Please prepare the training data first.")
             return
@@ -754,7 +910,7 @@ class MainWindow(QMainWindow):
             trainer = YOLOTrainer(yolo_config)
             
             # Setup training output directory
-            training_output = os.path.join(self.output_dir, "yolo_training")
+            training_output = os.path.join(self.datasets_dir, "yolo_training", video_name)
             os.makedirs(training_output, exist_ok=True)
             
             # Start training in a separate thread (simplified for now)
@@ -776,3 +932,63 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Training Error", f"Error starting training: {str(e)}")
+    
+    def show_uncertain_frame(self, item):
+        """Display the selected uncertain frame in the video player"""
+        # Extract frame index from item text (format: "Frame {frame_idx}")
+        try:
+            frame_idx = int(item.text().split(' ')[1])
+            # Find the matching frame in uncertain_frames list
+            for idx, frame_data in self.uncertain_frames:
+                if idx == frame_idx:
+                    # Display the frame in the video player
+                    self.video_player.set_image(frame_data)
+                    # Switch to the first tab (video/image display)
+                    self.tabs.setCurrentIndex(0)
+                    break
+        except (ValueError, IndexError) as e:
+            QMessageBox.warning(self, "Error", f"Could not display frame: {str(e)}")
+    
+    def abort_motion_detection(self):
+        """Abort the running motion detection process and clean up"""
+        if self.process_thread and self.process_thread.isRunning():
+            # Stop the processing thread
+            self.process_thread.stop()
+            self.process_thread.wait()
+            
+            QMessageBox.information(self, "Detection Aborted", "Motion detection was aborted.")
+            
+            # Reset progress bar
+            self.detection_progress.setValue(0)
+            self.frame_number_label.setText("Current frame: -")
+            
+            # Clean up any created files
+            self.clean_detection_files()
+            
+            # Re-enable UI controls
+            self.toggle_ui_during_detection(False)
+    
+    def clean_detection_files(self):
+        """Remove all files created during the detection process"""
+        if not self.video_path:
+            return
+            
+        video_name = self.get_video_name()
+        
+        # Clean annotations directory
+        annotations_dir = os.path.join(self.annotations_dir, video_name)
+        if os.path.exists(annotations_dir):
+            try:
+                import shutil
+                shutil.rmtree(annotations_dir)
+                os.makedirs(annotations_dir, exist_ok=True)
+            except Exception as e:
+                print(f"Error cleaning annotations directory: {str(e)}")
+        
+        # Clean uncertain frames file
+        uncertain_file = os.path.join(self.uncertain_dir, f"{video_name}.txt")
+        if os.path.exists(uncertain_file):
+            try:
+                os.remove(uncertain_file)
+            except Exception as e:
+                print(f"Error removing uncertain frames file: {str(e)}")

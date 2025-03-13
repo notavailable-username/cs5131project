@@ -89,20 +89,20 @@ class VideoPlayer(QWidget):
         self.skip_spinbox.valueChanged.connect(self.update_skip_amount)
         self.skip_spinbox.setToolTip("Number of frames to skip")
         skip_buttons_layout.addWidget(self.skip_spinbox)
-        
-        # Skip forward button
-        self.skip_forward = QPushButton()
-        self.skip_forward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
-        self.skip_forward.clicked.connect(self.skip_forward_frames)
-        self.skip_forward.setToolTip("Skip Forward")
-        skip_buttons_layout.addWidget(self.skip_forward)
-        
+
         # Skip backward button
         self.skip_backward = QPushButton()
         self.skip_backward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.skip_backward.clicked.connect(self.skip_backward_frames)
         self.skip_backward.setToolTip("Skip Backward")
         skip_buttons_layout.addWidget(self.skip_backward)
+        
+        # Skip forward button
+        self.skip_forward = QPushButton()
+        self.skip_forward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
+        self.skip_forward.clicked.connect(self.skip_forward_frames)
+        self.skip_forward.setToolTip("Skip Forward")
+        skip_buttons_layout.addWidget(self.skip_forward)        
         
         # Add second row of buttons to layout
         control_layout.addLayout(skip_buttons_layout)

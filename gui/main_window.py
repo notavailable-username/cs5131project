@@ -10,6 +10,7 @@ import os
 import numpy as np
 import torch
 from .video_player import VideoPlayer
+from .image_annotator_dialog import ImageAnnotatorDialog
 from models.motion_detector import MotionDetector
 from models.few_shot import FewShotEnsemble
 from models.yolo_trainer import YOLOTrainer
@@ -503,21 +504,21 @@ class MainWindow(QMainWindow):
             frame_path = os.path.join(uncertain_dir, f"frame_{frame_idx}.jpg")
             cv2.imwrite(frame_path, frame)
         
-        # Instead of using external LabelingTool, open our integrated labeling dialog
+        # Using the separated ImageAnnotatorDialog instead of LabelDialog
         self.open_integrated_label_tool(uncertain_dir)
 
     def set_label_directory(self, directory):
         # This method now directly handles the directory without using an external tool
-        if hasattr(self, 'label_dialog') and self.label_dialog.isVisible():
-            self.label_dialog.load_directory(directory)
+        if hasattr(self, 'annotator_dialog') and self.annotator_dialog.isVisible():
+            self.annotator_dialog.load_directory(directory)
         else:
             self.open_integrated_label_tool(directory)
     
     def open_integrated_label_tool(self, directory=None):
-        """Open an integrated labeling tool dialog instead of using the external LabelingTool class"""
-        self.label_dialog = LabelDialog(self, directory)
-        self.label_dialog.finished.connect(self.on_labeling_finished)
-        self.label_dialog.show()
+        """Open an integrated labeling tool dialog"""
+        self.annotator_dialog = ImageAnnotatorDialog(self, directory)
+        self.annotator_dialog.finished.connect(self.on_labeling_finished)
+        self.annotator_dialog.show()
     
     def on_labeling_finished(self):
         # Handle any post-labeling tasks here

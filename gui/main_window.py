@@ -135,6 +135,9 @@ class MainWindow(QMainWindow):
         self._init_ui()
     
     def _init_ui(self):
+        # Create menu bar
+        self._create_menu_bar()
+        
         # Main splitter to divide the screen
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.setCentralWidget(self.main_splitter)
@@ -157,7 +160,7 @@ class MainWindow(QMainWindow):
         right_widget.setLayout(right_layout)
         
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._create_import_tab(), "Import")
+        # Note: Import tab removed
         self.tabs.addTab(self._create_detection_tab(), "Detection")
         self.tabs.addTab(self._create_few_shot_tab(), "Few-Shot Learning")
         self.tabs.addTab(self._create_annotation_tab(), "Manual Annotation")
@@ -174,35 +177,168 @@ class MainWindow(QMainWindow):
         # Timer for updating video
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_video_display)
+    
+    def _create_menu_bar(self):
+        """Create the application menu bar"""
+        menubar = self.menuBar()
         
-    def _create_import_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
+        # File menu
+        file_menu = menubar.addMenu("File")
         
-        # Media loading buttons
-        btn_load_video = QPushButton("Load Video")
-        btn_load_video.clicked.connect(self.load_video)
-        layout.addWidget(btn_load_video)
+        # Import video actions
+        import_video_action = file_menu.addAction("Import Video")
+        import_video_action.triggered.connect(self.import_video)
         
-        btn_load_images = QPushButton("Load Images")
-        btn_load_images.clicked.connect(self.load_images)
-        layout.addWidget(btn_load_images)
+        import_videos_dir_action = file_menu.addAction("Import All Videos in Directory")
+        import_videos_dir_action.triggered.connect(self.import_videos_directory)
         
-        # Output directory
-        btn_output_dir = QPushButton("Select Output Directory")
-        btn_output_dir.clicked.connect(self.select_output_dir)
-        layout.addWidget(btn_output_dir)
+        file_menu.addSeparator()
         
-        self.output_dir_label = QLabel("Output directory: Not selected")
-        layout.addWidget(self.output_dir_label)
+        # Import image actions
+        import_image_action = file_menu.addAction("Import Image")
+        import_image_action.triggered.connect(self.import_image)
         
-        # Class management
-        btn_manage_classes = QPushButton("Manage Classes")
-        btn_manage_classes.clicked.connect(self.manage_classes)
-        layout.addWidget(btn_manage_classes)
+        import_images_dir_action = file_menu.addAction("Import All Images in Directory")
+        import_images_dir_action.triggered.connect(self.import_images_directory)
         
-        widget.setLayout(layout)
-        return widget
+        file_menu.addSeparator()
+        
+        # Output directory selection
+        select_output_action = file_menu.addAction("Select Output Directory")
+        select_output_action.triggered.connect(self.select_output_dir)
+        
+        # Exit action
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction("Exit")
+        exit_action.triggered.connect(self.close)
+        
+        # Edit menu (for future expansion)
+        edit_menu = menubar.addMenu("Edit")
+        
+        # Class management action
+        manage_classes_action = edit_menu.addAction("Manage Classes")
+        manage_classes_action.triggered.connect(self.manage_classes)
+    
+    # Remove the _create_import_tab method as it's no longer needed
+    
+    def import_video(self):
+        """Import a single video file to datasets/videos"""
+        video_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
+        )
+        
+        if not video_path:
+            return
+            
+        # Create the datasets/videos directory if it doesn't exist
+        videos_dir = os.path.join("datasets", "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        
+        # Copy the video to the datasets/videos directory
+        filename = os.path.basename(video_path)
+        destination = os.path.join(videos_dir, filename)
+        
+        try:
+            import shutil
+            shutil.copy2(video_path, destination)
+            self.video_path = destination
+            self.video_player.load_video(destination)
+            QMessageBox.information(self, "Video Imported", f"Video imported: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import video: {str(e)}")
+    
+    def import_videos_directory(self):
+        """Import all videos from a directory to datasets/videos"""
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory with Videos")
+        
+        if not directory:
+            return
+            
+        # Create the datasets/videos directory if it doesn't exist
+        videos_dir = os.path.join("datasets", "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        
+        # Get all video files from the directory
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
+        imported_count = 0
+        
+        try:
+            import shutil
+            for file in os.listdir(directory):
+                file_path = os.path.join(directory, file)
+                if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in video_extensions):
+                    destination = os.path.join(videos_dir, file)
+                    shutil.copy2(file_path, destination)
+                    imported_count += 1
+            
+            if imported_count > 0:
+                QMessageBox.information(self, "Videos Imported", f"Imported {imported_count} videos to datasets/videos")
+                # Load the first video if we haven't loaded any yet
+                if not self.video_path and imported_count > 0:
+                    first_video = next(iter([os.path.join(videos_dir, f) for f in os.listdir(videos_dir) 
+                                         if any(f.lower().endswith(ext) for ext in video_extensions)]), None)
+                    if first_video:
+                        self.video_path = first_video
+                        self.video_player.load_video(first_video)
+            else:
+                QMessageBox.information(self, "No Videos Found", "No video files found in the selected directory.")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import videos: {str(e)}")
+    
+    def import_image(self):
+        """Import a single image file to datasets/images"""
+        image_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Image", "", "Image Files (*.jpg *.jpeg *.png *.bmp)"
+        )
+        
+        if not image_path:
+            return
+            
+        # Create the datasets/images directory if it doesn't exist
+        images_dir = os.path.join("datasets", "images")
+        os.makedirs(images_dir, exist_ok=True)
+        
+        # Copy the image to the datasets/images directory
+        filename = os.path.basename(image_path)
+        destination = os.path.join(images_dir, filename)
+        
+        try:
+            import shutil
+            shutil.copy2(image_path, destination)
+            QMessageBox.information(self, "Image Imported", f"Image imported: {filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import image: {str(e)}")
+    
+    def import_images_directory(self):
+        """Import all images from a directory to datasets/images"""
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory with Images")
+        
+        if not directory:
+            return
+            
+        # Create the datasets/images directory if it doesn't exist
+        images_dir = os.path.join("datasets", "images")
+        os.makedirs(images_dir, exist_ok=True)
+        
+        # Get all image files from the directory
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
+        imported_count = 0
+        
+        try:
+            import shutil
+            for file in os.listdir(directory):
+                file_path = os.path.join(directory, file)
+                if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in image_extensions):
+                    destination = os.path.join(images_dir, file)
+                    shutil.copy2(file_path, destination)
+                    imported_count += 1
+            
+            if imported_count > 0:
+                QMessageBox.information(self, "Images Imported", f"Imported {imported_count} images to datasets/images")
+            else:
+                QMessageBox.information(self, "No Images Found", "No image files found in the selected directory.")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import images: {str(e)}")
     
     def _create_detection_tab(self):
         widget = QWidget()

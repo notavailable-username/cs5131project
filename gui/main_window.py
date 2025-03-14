@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QTabWidget, QPushButton, 
     QFileDialog, QListWidget, QLabel, QMessageBox, QProgressBar, QComboBox,
     QDockWidget, QStackedLayout, QSplitter, QTableWidget, QTableWidgetItem,
-    QGroupBox
+    QGroupBox, QSpinBox, QDoubleSpinBox, QSlider, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
@@ -55,7 +55,7 @@ class VideoProcessThread(QThread):
             # Process every nth frame
             if frame_count % frame_interval == 0:
                 # Update progress and frame number - calculate progress correctly
-                progress = min(100, int(100 * frame_count / (total_frames - 1)))
+                progress = min(100, int(100 * frame_count / total_frames))
                 self.update_progress.emit(progress)
                 self.update_frame_number.emit(frame_count)
                 
@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
         self.detection_running = False
         
         self._init_ui()
+        self._apply_styles()
     
     def _init_ui(self):
         # Create menu bar
@@ -192,6 +193,60 @@ class MainWindow(QMainWindow):
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_video_display)
     
+    def _apply_styles(self):
+        """Apply consistent styling to buttons and controls throughout the application"""
+        # Button style: white text/icons with slightly lighter background
+        button_style = """
+            QPushButton {
+                color: white;
+                background-color: #3d3d3d;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton:pressed {
+                background-color: #2d2d2d;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+        """
+        
+        # Spinbox and ComboBox style
+        spinbox_style = """
+            QSpinBox, QDoubleSpinBox, QComboBox {
+                color: white;
+                background-color: #3d3d3d;
+                border: 1px solid #555555;
+                border-radius: 2px;
+            }
+            QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {
+                background-color: #4a4a4a;
+            }
+            QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+        """
+        
+        # Apply styles to all buttons in this window
+        for button in self.findChildren(QPushButton):
+            button.setStyleSheet(button_style)
+        
+        # Apply styles to all spinboxes and combo boxes
+        for spinbox in self.findChildren(QSpinBox):
+            spinbox.setStyleSheet(spinbox_style)
+        
+        for dspinbox in self.findChildren(QDoubleSpinBox):
+            dspinbox.setStyleSheet(spinbox_style)
+            
+        for combobox in self.findChildren(QComboBox):
+            combobox.setStyleSheet(spinbox_style)
+    
     def _create_menu_bar(self):
         """Create the application menu bar"""
         menubar = self.menuBar()
@@ -227,6 +282,69 @@ class MainWindow(QMainWindow):
         # Class management action
         manage_classes_action = edit_menu.addAction("Manage Classes")
         manage_classes_action.triggered.connect(self.manage_classes)
+    
+    def _create_detection_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group 1: Motion detection settings
+        settings_group = QGroupBox("Detection Settings")
+        settings_layout = QVBoxLayout()
+        
+        # Replace combobox with numeric sensitivity input
+        settings_layout.addWidget(QLabel("Detection Sensitivity (5-30, lower is more sensitive):"))
+        self.detection_threshold = QSpinBox()
+        self.detection_threshold.setRange(5, 30)
+        self.detection_threshold.setValue(16)  # Default medium sensitivity
+        self.detection_threshold.setToolTip("Lower values detect more motion but may include noise")
+        settings_layout.addWidget(self.detection_threshold)
+        
+        settings_group.setLayout(settings_layout)
+        layout.addWidget(settings_group)
+        
+        # Group 2: Detection controls
+        controls_group = QGroupBox("Controls")
+        controls_layout = QVBoxLayout()
+        
+        # Motion detection button
+        self.btn_run_detection = QPushButton("Run Motion Detection")
+        self.btn_run_detection.clicked.connect(self.run_motion_detection)
+        controls_layout.addWidget(self.btn_run_detection)
+        
+        # Abort detection button
+        self.btn_abort_detection = QPushButton("Abort Detection")
+        self.btn_abort_detection.clicked.connect(self.abort_motion_detection)
+        self.btn_abort_detection.setEnabled(False)
+        controls_layout.addWidget(self.btn_abort_detection)
+        
+        # Progress indicator
+        self.detection_progress = QProgressBar()
+        self.detection_progress.setMinimumWidth(250)
+        self.detection_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        controls_layout.addWidget(self.detection_progress)
+        
+        # Frame number display
+        self.frame_number_label = QLabel("Current frame: -")
+        controls_layout.addWidget(self.frame_number_label)
+        
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
+        
+        # Results summary
+        results_group = QGroupBox("Results")
+        results_layout = QVBoxLayout()
+        
+        self.detection_summary = QLabel("No detections yet")
+        results_layout.addWidget(self.detection_summary)
+        
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
+        # Add stretch to improve spacing
+        layout.addStretch()
+        
+        widget.setLayout(layout)
+        return widget
     
     # Helper methods for directory management
     def get_video_name(self):
@@ -279,7 +397,8 @@ class MainWindow(QMainWindow):
             import shutil
             shutil.copy2(video_path, destination)
             self.video_path = destination
-            self.video_player.load_video(destination)
+            # Use the new load_video method with source type
+            self.video_player.load_video(destination, "Original Video")
             QMessageBox.information(self, "Video Imported", f"Video imported: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import video: {str(e)}")
@@ -376,66 +495,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "No Images Found", "No image files found in the selected directory.")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import images: {str(e)}")
-    
-    def _create_detection_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        
-        # Group 1: Motion detection settings
-        settings_group = QGroupBox("Detection Settings")
-        settings_layout = QVBoxLayout()
-        
-        # Detection settings
-        self.detection_threshold = QComboBox()
-        self.detection_threshold.addItems(["Low", "Medium", "High"])
-        self.detection_threshold.setCurrentIndex(1)
-        settings_layout.addWidget(QLabel("Detection Sensitivity:"))
-        settings_layout.addWidget(self.detection_threshold)
-        
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-        
-        # Group 2: Detection controls
-        controls_group = QGroupBox("Controls")
-        controls_layout = QVBoxLayout()
-        
-        # Motion detection button
-        self.btn_run_detection = QPushButton("Run Motion Detection")
-        self.btn_run_detection.clicked.connect(self.run_motion_detection)
-        controls_layout.addWidget(self.btn_run_detection)
-        
-        # Abort detection button
-        self.btn_abort_detection = QPushButton("Abort Detection")
-        self.btn_abort_detection.clicked.connect(self.abort_motion_detection)
-        self.btn_abort_detection.setEnabled(False)
-        controls_layout.addWidget(self.btn_abort_detection)
-        
-        # Progress indicator
-        self.detection_progress = QProgressBar()
-        controls_layout.addWidget(self.detection_progress)
-        
-        # Frame number display
-        self.frame_number_label = QLabel("Current frame: -")
-        controls_layout.addWidget(self.frame_number_label)
-        
-        controls_group.setLayout(controls_layout)
-        layout.addWidget(controls_group)
-        
-        # Results summary
-        results_group = QGroupBox("Results")
-        results_layout = QVBoxLayout()
-        
-        self.detection_summary = QLabel("No detections yet")
-        results_layout.addWidget(self.detection_summary)
-        
-        results_group.setLayout(results_layout)
-        layout.addWidget(results_group)
-        
-        # Add stretch to improve spacing
-        layout.addStretch()
-        
-        widget.setLayout(layout)
-        return widget
     
     def _create_few_shot_tab(self):
         widget = QWidget()
@@ -564,24 +623,36 @@ class MainWindow(QMainWindow):
         for action in self.menuBar().actions():
             action.setEnabled(not is_running)
         
-        # Disable all buttons in video player directly
+        # Disable ALL video player controls
         if hasattr(self.video_player, 'findChildren'):
+            # Disable buttons
             for btn in self.video_player.findChildren(QPushButton):
                 btn.setEnabled(not is_running)
+            
+            # Disable spinboxes
+            for spinbox in self.video_player.findChildren(QSpinBox):
+                spinbox.setEnabled(not is_running)
+            
+            # Disable sliders
+            for slider in self.video_player.findChildren(QSlider):
+                slider.setEnabled(not is_running)
+        
+        # Update the video info to indicate detection is running
+        if is_running:
+            self.video_player.set_video_source_type("Detection Preview")
+        else:
+            self.video_player.set_video_source_type("Original Video")
     
     def run_motion_detection(self):
         if not self.video_path:
             QMessageBox.warning(self, "Missing Input", "Please select a video first.")
             return
         
-        # Update motion detector settings based on UI
-        sensitivity = self.detection_threshold.currentText()
-        if sensitivity == "Low":
-            self.motion_detector.varThreshold = 25
-        elif sensitivity == "Medium":
-            self.motion_detector.varThreshold = 16
-        elif sensitivity == "High":
-            self.motion_detector.varThreshold = 10
+        # Get and validate the sensitivity value
+        sensitivity_value = self.detection_threshold.value()
+        
+        # Update motion detector settings based on UI input
+        self.motion_detector.varThreshold = sensitivity_value
         
         # Clean up any previous detection results
         self.clean_detection_files()

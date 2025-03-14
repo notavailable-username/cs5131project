@@ -1,8 +1,9 @@
 import cv2
+import os
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (QLabel, QMessageBox, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QSlider, QSpinBox, QStyle, QSizePolicy, QFrame, QLineEdit)
+                           QHBoxLayout, QPushButton, QSlider, QSpinBox, QStyle, QSizePolicy, QFrame, QLineEdit)
 
 class VideoPlayer(QWidget):
     frame_changed = pyqtSignal(int)  # Signal to notify frame changes
@@ -18,11 +19,19 @@ class VideoPlayer(QWidget):
         self.current_frame_idx = 0
         self.current_frame = None
         self.skip_frames = 10  # Default frame skip amount
-        
+        self.video_source_type = "No video"  # Track the source of the video
         self.setupUI()
+        self._apply_styles()
     
+    def _invert_icon(self, standard_pixmap):
+        """Inverts the colors of a standard icon for better visibility on dark backgrounds"""
+        pixmap = self.style().standardPixmap(standard_pixmap)
+        image = pixmap.toImage()
+        image.invertPixels()
+        return QIcon(QPixmap.fromImage(image))
+        
     def setupUI(self):
-        # Main layout
+        # Main layout:
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -57,21 +66,21 @@ class VideoPlayer(QWidget):
         
         # Play/Pause button with icon
         self.play_button = QPushButton()
-        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPlay))
         self.play_button.clicked.connect(self.toggle_playback)
         self.play_button.setToolTip("Play/Pause")
         buttons_layout.addWidget(self.play_button)
         
         # Previous frame
         self.prev_button = QPushButton()
-        self.prev_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
+        self.prev_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.prev_button.clicked.connect(self.prev_frame)
         self.prev_button.setToolTip("Previous Frame")
         buttons_layout.addWidget(self.prev_button)
         
         # Next frame
         self.next_button = QPushButton()
-        self.next_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
+        self.next_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaSkipForward))
         self.next_button.clicked.connect(self.next_frame)
         self.next_button.setToolTip("Next Frame")
         buttons_layout.addWidget(self.next_button)
@@ -89,17 +98,17 @@ class VideoPlayer(QWidget):
         self.skip_spinbox.valueChanged.connect(self.update_skip_amount)
         self.skip_spinbox.setToolTip("Number of frames to skip")
         skip_buttons_layout.addWidget(self.skip_spinbox)
-
+        
         # Skip backward button
         self.skip_backward = QPushButton()
-        self.skip_backward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
+        self.skip_backward.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.skip_backward.clicked.connect(self.skip_backward_frames)
         self.skip_backward.setToolTip("Skip Backward")
         skip_buttons_layout.addWidget(self.skip_backward)
         
         # Skip forward button
         self.skip_forward = QPushButton()
-        self.skip_forward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
+        self.skip_forward.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaSeekForward))
         self.skip_forward.clicked.connect(self.skip_forward_frames)
         self.skip_forward.setToolTip("Skip Forward")
         skip_buttons_layout.addWidget(self.skip_forward)        
@@ -129,10 +138,89 @@ class VideoPlayer(QWidget):
         control_layout.addWidget(self.info_label)
         
         main_layout.addLayout(control_layout)
-        
         self.setLayout(main_layout)
-    
-    def load_video(self, video_path):
+        
+    def _apply_styles(self):
+        """Apply consistent styling to all buttons and controls"""
+        # Button style: white text/icons with slightly lighter background
+        button_style = """
+            QPushButton {
+                color: white;
+                background-color: #3d3d3d;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton:pressed {
+                background-color: #2d2d2d;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+        """
+        
+        # Spinbox and Input style
+        spinbox_style = """
+            QSpinBox, QLineEdit {
+                color: white;
+                background-color: #3d3d3d;
+                border: 1px solid #555555;
+                border-radius: 2px;
+            }
+            QSpinBox:hover, QLineEdit:hover {
+                background-color: #4a4a4a;
+            }
+            QSpinBox:disabled, QLineEdit:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+        """
+        
+        # Style for sliders
+        slider_style = """
+            QSlider::groove:horizontal {
+                height: 8px;
+                background: #2d2d2d;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #3d3d3d;
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -4px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #4a4a4a;
+            }
+            QSlider::handle:horizontal:disabled {
+                background: #555555;
+            }
+            QSlider:disabled {
+                opacity: 0.7;
+            }
+        """
+        
+        # Apply styles to all buttons
+        for button in self.findChildren(QPushButton):
+            button.setStyleSheet(button_style)
+        
+        # Apply style to spinboxes and text inputs
+        for spinbox in self.findChildren(QSpinBox):
+            spinbox.setStyleSheet(spinbox_style)
+            
+        for line_edit in self.findChildren(QLineEdit):
+            line_edit.setStyleSheet(spinbox_style)
+        
+        # Apply style to slider only
+        self.position_slider.setStyleSheet(slider_style)
+        
+    def load_video(self, video_path, source_type="Original Video"):
         try:
             self.cap = cv2.VideoCapture(video_path)
             if not self.cap.isOpened():
@@ -145,17 +233,18 @@ class VideoPlayer(QWidget):
             self.frame_rate = self.cap.get(cv2.CAP_PROP_FPS)
             if self.frame_rate <= 0:
                 self.frame_rate = 30  # Fallback frame rate
-            
+                
             # Update UI elements
             self.position_slider.setRange(0, self.total_frames - 1)
             self.position_slider.setValue(0)
             self.frame_input.setRange(0, self.total_frames - 1)
             self.frame_counter.setText(f"Frame: 0 / {self.total_frames}")
             
-            # Update video info
+            # Set video source type and update info
+            self.video_source_type = source_type
             width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.video_info = f"Resolution: {width}x{height} | FPS: {self.frame_rate:.2f} | Frames: {self.total_frames}"
+            self.video_info = f"Source: {self.video_source_type} | Resolution: {width}x{height} | FPS: {self.frame_rate:.2f} | Frames: {self.total_frames}"
             self.info_label.setText(self.video_info)
             
             # Load first frame
@@ -171,16 +260,27 @@ class VideoPlayer(QWidget):
             QMessageBox.critical(None, "Error", f"Error loading video: {str(e)}")
             return False
     
-    def load_image(self, image_path):
+    def set_video_source_type(self, source_type):
+        """Update the video source type information"""
+        self.video_source_type = source_type
+        # Update the info label if video is loaded
+        if hasattr(self, 'video_info') and self.cap is not None:
+            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.video_info = f"Source: {self.video_source_type} | Resolution: {width}x{height} | FPS: {self.frame_rate:.2f} | Frames: {self.total_frames}"
+            self.info_label.setText(self.video_info)
+    
+    def load_image(self, image_path, source_type="Original Image"):
         try:
             frame = cv2.imread(image_path)
             if frame is None:
                 QMessageBox.critical(None, "Error", f"Could not open image file: {image_path}")
                 return False
-                
+                        
             self.current_frame = frame
             self.set_image(frame)
-            self.info_label.setText(f"Image loaded: {image_path}")
+            self.video_source_type = source_type
+            self.info_label.setText(f"Source: {self.video_source_type} | Image: {os.path.basename(image_path)}")
             return True
         except Exception as e:
             QMessageBox.critical(None, "Error", f"Error loading image: {str(e)}")
@@ -217,7 +317,7 @@ class VideoPlayer(QWidget):
             bytes_per_line = ch * w
             qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(qt_image)
-            self.display.setPixmap(pixmap.scaled(self.display.size(), Qt.AspectRatioMode.KeepAspectRatio, 
+            self.display.setPixmap(pixmap.scaled(self.display.size(), Qt.AspectRatioMode.KeepAspectRatio,
                                        Qt.TransformationMode.SmoothTransformation))
         except Exception as e:
             print(f"Error displaying frame: {str(e)}")
@@ -238,14 +338,14 @@ class VideoPlayer(QWidget):
             ms_per_frame = int(1000 / self.frame_rate)
             self.timer.start(ms_per_frame)
             self._playing = True
-            self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+            self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPause))
         else:
             QMessageBox.warning(None, "Playback Error", "No valid video is loaded")
     
     def pause(self):
         self.timer.stop()
         self._playing = False
-        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPlay))
     
     def is_playing(self):
         return self._playing

@@ -1735,9 +1735,6 @@ class MainWindow(QMainWindow):
         # Update uncertain frames list if we have those for this video
         self.update_uncertain_frames_list()
         
-        # Note: We don't need to manually restore frame position here since
-        # VideoPlayer.switch_to_video already handles this within the player component
-        
         # Update controls state
         self.update_controls_state()
 

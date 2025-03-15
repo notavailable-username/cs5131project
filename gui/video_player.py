@@ -550,24 +550,39 @@ class VideoPlayer(QWidget):
     def get_total_frames(self):
         return self.total_frames
     
-    def seek(self, frame_idx):
+    def seek(self, frame_idx, store_frame_idx=True):
+        """
+        Seek to a specific frame in the video
+        
+        Args:
+            frame_idx: The frame index to seek to
+            store_frame_idx: Whether to update the stored frame_idx in the video info
+        """
         if self.cap is None:
             return False
             
         try:
-            frame_idx = max(0, min(frame_idx, self.total_frames - 1))
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            safe_frame_idx = max(0, min(frame_idx, self.total_frames - 1))
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, safe_frame_idx)
             ret, frame = self.cap.read()
+            
             if ret:
                 self.current_frame = frame
-                self.current_frame_idx = frame_idx
+                self.current_frame_idx = safe_frame_idx
+                
+                if store_frame_idx and self.current_video_index >= 0:
+                    self.videos[self.current_video_index]["frame_idx"] = frame_idx
+                
+                self.position_slider.blockSignals(True)
+                self.position_slider.setValue(safe_frame_idx)
+                self.position_slider.blockSignals(False)
+                
                 self.set_image(frame)
-                self.position_slider.setValue(frame_idx)
                 self.update_frame_counter()
-                self.frame_changed.emit(frame_idx)
+                self.frame_changed.emit(safe_frame_idx)
                 return True
             else:
-                print(f"Failed to read frame at index {frame_idx}")
+                print(f"Failed to read frame at index {safe_frame_idx}")
         except Exception as e:
             print(f"Error seeking to frame {frame_idx}: {str(e)}")
         return False
@@ -761,83 +776,64 @@ class VideoPlayer(QWidget):
         if index < 0 or index >= len(self.videos):
             return False
         
-        # If we're switching to the same video, do nothing
         if index == self.current_video_index:
             return True
         
-        # Save current video state if we have one
         if self.current_video_index >= 0 and self.current_video_index < len(self.videos):
             current_video = self.videos[self.current_video_index]
             if self.cap and self.cap.isOpened():
-                # Store exactly where we are without validation - maintain independence
                 current_video["frame_idx"] = self.current_frame_idx
         
-        # Stop playback
         was_playing = self._playing
         self.pause()
         
-        # Switch to the new video
         self.current_video_index = index
         video_info = self.videos[index]
-        
-        # Update the UI with minimal operations
         self.cap = video_info["cap"]
         self.total_frames = video_info["total_frames"]
         self.frame_rate = video_info["frame_rate"]
-        
-        # Use the stored frame index EXACTLY as stored - complete independence
         self.current_frame_idx = video_info["frame_idx"]
         
-        # Update UI elements
+        self.position_slider.blockSignals(True)
         self.position_slider.setRange(0, max(0, self.total_frames - 1))
-        
-        # We still need to constrain the slider position for UI display
         safe_ui_pos = min(self.current_frame_idx, max(0, self.total_frames - 1))
         self.position_slider.setValue(safe_ui_pos)
+        self.position_slider.blockSignals(False)
         
         self.frame_input.setText(str(self.current_frame_idx))
         self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames}")
         self.rate_text.setText(str(int(self.frame_rate)))
         
-        # Update video selector dropdown - only if needed
         if self.video_selector.currentIndex() != index:
-            self.video_selector.blockSignals(True)  # Prevent recursive calls
+            self.video_selector.blockSignals(True)
             self.video_selector.setCurrentIndex(index)
             self.video_selector.blockSignals(False)
         
-        # Defer video info update for better performance
         self.update_video_info()
         
-        # Set the video's position to exactly where it was last time
-        # If it's out of bounds, let the OpenCV API handle it without changing our stored position
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
-        ret, frame = self.cap.read()
-        
-        if ret:
-            self.current_frame = frame
-            self.set_image(frame)
-        else:
-            # If seeking fails, try to get the first frame for display only
-            # BUT DON'T UPDATE the stored frame_idx!
-            print(f"Warning: Couldn't seek to frame {self.current_frame_idx}, displaying first frame instead")
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        try:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
             ret, frame = self.cap.read()
             if ret:
                 self.current_frame = frame
                 self.set_image(frame)
-                # Return to the desired position so the next play/navigation works correctly
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
+            else:
+                print(f"Warning: Couldn't seek to frame {self.current_frame_idx}, displaying first frame instead")
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ret, frame = self.cap.read()
+                if ret:
+                    self.current_frame = frame
+                    self.set_image(frame)
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
+        except Exception as e:
+            print(f"Error seeking to frame {self.current_frame_idx}: {str(e)}")
         
-        # Update navigation buttons
         self.update_video_navigation_buttons()
         
-        # Resume playback if it was playing
         if was_playing:
             self.play()
         
-        # Emit signal that video has changed
         self.video_changed.emit(index)
-        
         return True
     
     def prev_video(self):
@@ -917,4 +913,3 @@ class VideoPlayer(QWidget):
                     video['cap'].release()
         elif hasattr(self, 'cap') and self.cap is not None:
             self.cap.release()
-

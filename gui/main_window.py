@@ -556,8 +556,8 @@ class MainWindow(QMainWindow):
         settings_group = QGroupBox("Detection Settings")
         settings_layout = QVBoxLayout()
         
-        # Replace spinbox with text input for sensitivity
-        settings_layout.addWidget(QLabel("Detection Sensitivity (10-50, lower is more sensitive):"))
+        # Replace spinbox with text input for sensitivity (removed range limits)
+        settings_layout.addWidget(QLabel("Detection Sensitivity (lower values are more sensitive):"))
         self.detection_threshold = QLineEdit()
         self.detection_threshold.setText("25")  # Default medium sensitivity
         self.detection_threshold.setToolTip("Lower values detect more motion but may include noise")
@@ -963,14 +963,10 @@ class MainWindow(QMainWindow):
         # No need to store frame position here as the VideoPlayer class
         # already tracks this per video in its internal state
         
-        # Get and validate the sensitivity value from text field
+        # Validate the sensitivity value from text field
         try:
             sensitivity_value = int(self.detection_threshold.text())
-            # Ensure value is within valid range
-            if sensitivity_value < 10 or sensitivity_value > 50:
-                QMessageBox.warning(self, "Invalid Input", "Detection sensitivity must be between 10 and 50.")
-                self.detection_threshold.setText("25")  # Reset to default
-                return
+            # Bounds check removed - accepting any valid integer
         except ValueError:
             QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for detection sensitivity.")
             self.detection_threshold.setText("25")  # Reset to default

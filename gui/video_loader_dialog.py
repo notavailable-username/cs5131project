@@ -69,7 +69,7 @@ class VideoThumbnailItem(QListWidgetItem):
             self.setText(self.video_name)
 
 class VideoLoaderDialog(QDialog):
-    video_selected = pyqtSignal(str, str)  # path, display_name (single video)
+    # Removed the video_selected signal
     videos_selected = pyqtSignal(list, list)  # paths, display_names (multiple videos)
     
     def __init__(self, parent=None):
@@ -250,46 +250,20 @@ class VideoLoaderDialog(QDialog):
     
     def on_video_double_clicked(self, item):
         """Handle double-click on video item"""
-        # In single selection mode, just select and load this video
-        if not self.multi_select_checkbox.isChecked():
-            self.emit_single_selected_video(item)
-            self.accept()
-        else:
-            # In multi-selection mode, toggle selection on double click
-            self.on_video_clicked(item)
+        # Treat double-click as selecting a single video
+        self.videos_selected.emit([item.video_path], [item.video_name])
+        self.accept()
     
     def load_selected_video(self):
         """Load the selected video(s)"""
-        selected_items = []
-        for idx in range(self.videos_list.count()):
-            item = self.videos_list.item(idx)
-            if hasattr(item, 'is_selected') and item.is_selected:
-                selected_items.append(item)
+        selected_items = [
+            item for idx in range(self.videos_list.count())
+            if (item := self.videos_list.item(idx)).is_selected
+        ]
         
-        if len(selected_items) == 0:
-            # Show a message that no video is selected
-            return
-        elif len(selected_items) == 1 and not self.multi_select_checkbox.isChecked():
-            # Single video selected in single selection mode
-            self.emit_single_selected_video(selected_items[0])
-        else:
-            # Multiple videos or explicitly using multi-selection mode
-            self.emit_multiple_selected_videos(selected_items)
-            
-        self.accept()
-    
-    def emit_single_selected_video(self, item):
-        """Emit signal with a single selected video"""
-        if isinstance(item, VideoThumbnailItem):
-            self.video_selected.emit(item.video_path, item.video_name)
-    
-    def emit_multiple_selected_videos(self, items):
-        """Emit signal with multiple selected videos"""
-        if items:
-            paths = []
-            names = []
-            for item in items:
-                if isinstance(item, VideoThumbnailItem):
-                    paths.append(item.video_path)
-                    names.append(item.video_name)
+        if selected_items:
+            # Emit all selected videos using the unified signal
+            paths = [item.video_path for item in selected_items]
+            names = [item.video_name for item in selected_items]
             self.videos_selected.emit(paths, names)
+            self.accept()

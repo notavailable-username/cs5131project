@@ -217,6 +217,11 @@ class MainWindow(QMainWindow):
         # Add frame position tracking per video
         self.video_frame_positions = {}  # Dictionary mapping video paths to frame positions
         
+        # Batch processing variables
+        self.batch_processing = False
+        self.video_queue = []
+        self.current_batch_index = -1
+        
         # Create base directories
         self.datasets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
         self.annotations_dir = os.path.join(self.datasets_dir, "annotations")
@@ -522,6 +527,7 @@ class MainWindow(QMainWindow):
     def update_controls_state(self):
         """Update the enabled state of controls based on video availability"""
         has_video = self.current_video_path is not None
+        has_multiple_videos = hasattr(self, 'video_player') and hasattr(self.video_player, 'videos') and len(self.video_player.videos) > 1
         
         # Update video player controls
         self.video_player.set_controls_enabled(has_video)
@@ -529,6 +535,8 @@ class MainWindow(QMainWindow):
         # Update detection tab controls
         if hasattr(self, 'btn_run_detection'):
             self.btn_run_detection.setEnabled(has_video)
+        if hasattr(self, 'btn_run_all_detection'):
+            self.btn_run_all_detection.setEnabled(has_multiple_videos)
         if hasattr(self, 'detection_threshold'):
             self.detection_threshold.setEnabled(has_video)
         if hasattr(self, 'frame_interval'):
@@ -581,6 +589,11 @@ class MainWindow(QMainWindow):
         self.btn_run_detection = QPushButton("Run Motion Detection")
         self.btn_run_detection.clicked.connect(self.run_motion_detection)
         controls_layout.addWidget(self.btn_run_detection)
+        
+        # Add new button for running detection on all videos
+        self.btn_run_all_detection = QPushButton("Run Motion Detection on All Videos")
+        self.btn_run_all_detection.clicked.connect(self.run_motion_detection_all_videos)
+        controls_layout.addWidget(self.btn_run_all_detection)
         
         # Abort detection button
         self.btn_abort_detection = QPushButton("Abort Detection")
@@ -933,6 +946,7 @@ class MainWindow(QMainWindow):
         
         # Toggle detection buttons
         self.btn_run_detection.setEnabled(not is_running)
+        self.btn_run_all_detection.setEnabled(not is_running)
         self.btn_abort_detection.setEnabled(is_running)
         self.detection_threshold.setEnabled(not is_running)
         self.frame_interval.setEnabled(not is_running)  # Also disable frame interval input
@@ -1013,6 +1027,119 @@ class MainWindow(QMainWindow):
         self.detection_progress.setValue(0)
         self.motion_thread.start()
     
+    def run_motion_detection_all_videos(self):
+        """Run motion detection on all loaded videos sequentially"""
+        if not hasattr(self.video_player, 'videos') or len(self.video_player.videos) == 0:
+            QMessageBox.warning(self, "Missing Input", "No videos loaded.")
+            return
+        
+        # Get the sensitivity and frame interval values from UI
+        try:
+            sensitivity_value = int(self.detection_threshold.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for detection sensitivity.")
+            self.detection_threshold.setText("25")  # Reset to default
+            return
+        
+        try:
+            frame_interval = int(self.frame_interval.text())
+            if frame_interval < 1:
+                QMessageBox.warning(self, "Invalid Input", "Frame interval must be at least 1.")
+                self.frame_interval.setText("2")  # Reset to default
+                return
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for frame interval.")
+            self.frame_interval.setText("2")  # Reset to default
+            return
+        
+        # Update motion detector settings
+        self.motion_detector.varThreshold = sensitivity_value
+        
+        # Initialize batch processing
+        self.batch_processing = True
+        self.video_queue = [video['path'] for video in self.video_player.videos]
+        self.current_batch_index = -1
+        
+        # Start with the first video
+        self.process_next_video_in_queue()
+    
+    def process_next_video_in_queue(self):
+        """Process the next video in the queue for batch detection"""
+        if not self.batch_processing or not self.video_queue:
+            # Batch processing complete or aborted
+            self.batch_processing = False
+            self.toggle_ui_during_detection(False)
+            QMessageBox.information(self, "Batch Processing Complete", 
+                                  "Motion detection completed on all videos.")
+            return
+        
+        # Move to next video in queue
+        self.current_batch_index += 1
+        if self.current_batch_index >= len(self.video_queue):
+            # All videos processed
+            self.batch_processing = False
+            self.toggle_ui_during_detection(False)
+            QMessageBox.information(self, "Batch Processing Complete", 
+                                  "Motion detection completed on all videos.")
+            return
+        
+        # Get the next video path
+        next_video_path = self.video_queue[self.current_batch_index]
+        
+        # Find the index in video_player's videos list
+        next_video_index = -1
+        for i, video in enumerate(self.video_player.videos):
+            if video['path'] == next_video_path:
+                next_video_index = i
+                break
+        
+        if next_video_index >= 0:
+            # Switch to this video
+            self.video_player.switch_to_video(next_video_index)
+            self.current_video_path = next_video_path
+            
+            # Update UI to show current video being processed
+            video_name = os.path.basename(next_video_path)
+            self.detection_summary.setText(f"Processing video {self.current_batch_index + 1} of {len(self.video_queue)}: {video_name}")
+            
+            # Clean detection files for this video
+            self.clean_detection_files()
+            
+            # Disable UI controls during detection
+            self.toggle_ui_during_detection(True)
+            
+            # Get frame interval value from text field
+            try:
+                frame_interval_value = int(self.frame_interval.text())
+            except ValueError:
+                frame_interval_value = 2  # Default if invalid
+            
+            # Start motion detection
+            self.motion_thread = MotionDetectionThread(
+                self.current_video_path, self.motion_detector
+            )
+            
+            # Set frame interval for the thread
+            cap = cv2.VideoCapture(self.current_video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            self.motion_thread.frame_interval = max(1, int(fps / frame_interval_value))
+            
+            # Connect signals
+            self.motion_thread.update_progress.connect(self.detection_progress.setValue)
+            self.motion_thread.update_frame.connect(self.update_detection_display)
+            self.motion_thread.update_frame_number.connect(self.update_frame_number)
+            self.motion_thread.detection_complete.connect(self.handle_motion_detection_complete)
+            
+            # Reset progress bar
+            self.detection_progress.setValue(0)
+            
+            # Start detection
+            self.motion_thread.start()
+        else:
+            # Skip to next if this video is no longer in the player
+            self.process_next_video_in_queue()
+    
     def update_frame_number(self, frame_number):
         """Update the frame number display"""
         self.frame_number_label.setText(f"Current frame: {frame_number}")
@@ -1056,10 +1183,23 @@ class MainWindow(QMainWindow):
         if self.current_video_path in self.video_frame_positions:
             self.video_player.seek(max(0, self.video_frame_positions[self.current_video_path]))
         
-        QMessageBox.information(self, "Detection Complete", 
-                              f"Motion detection completed.\n"
-                              f"Total detections: {len(all_detections)}")
-        # Reset progress bar to 0% when detection is complete
+        # If we're in batch mode, continue with the next video
+        if self.batch_processing:
+            # Small delay to allow UI to update
+            QTimer.singleShot(500, self.process_next_video_in_queue)
+        else:
+            # Otherwise, re-enable UI controls
+            self.toggle_ui_during_detection(False)
+            
+            # Restore the player to the original frame position using the per-video tracking
+            if self.current_video_path in self.video_frame_positions:
+                self.video_player.seek(max(0, self.video_frame_positions[self.current_video_path]))
+            
+            QMessageBox.information(self, "Detection Complete", 
+                                  f"Motion detection completed.\n"
+                                  f"Total detections: {len(all_detections)}")
+        
+        # Reset progress bar to 0% when detection is complete for this video
         self.detection_progress.setValue(0)
     
     def save_motion_detection_results(self):
@@ -1152,14 +1292,24 @@ class MainWindow(QMainWindow):
             self.motion_thread.stop()
             self.motion_thread.wait()
             
-            QMessageBox.information(self, "Detection Aborted", "Motion detection was aborted.")
+            message = "Motion detection was aborted."
+            if self.batch_processing:
+                message += " Batch processing canceled."
+                self.batch_processing = False
+            
+            QMessageBox.information(self, "Detection Aborted", message)
             
         elif self.process_thread and self.process_thread.isRunning():
             # Stop the video processing thread if that's running instead
             self.process_thread.stop()
             self.process_thread.wait()
             
-            QMessageBox.information(self, "Detection Aborted", "Video processing was aborted.")
+            message = "Video processing was aborted."
+            if self.batch_processing:
+                message += " Batch processing canceled."
+                self.batch_processing = False
+            
+            QMessageBox.information(self, "Detection Aborted", message)
         
         # Reset progress and UI regardless of which thread was running
         self.detection_progress.setValue(0)
@@ -1171,8 +1321,8 @@ class MainWindow(QMainWindow):
         # Re-enable UI controls
         self.toggle_ui_during_detection(False)
         
-        # No need to restore frame position here as it's already handled
-        # by the VideoPlayer component internally
+        # Cancel batch processing
+        self.batch_processing = False
     
     def add_support_example(self):
         # Get current class

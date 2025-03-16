@@ -646,7 +646,7 @@ class VideoPlayer(QWidget):
     
     def update_frame_counter(self):
         """Update the frame counter label"""
-        self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames}")
+        self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames-1}")
     
     def slider_value_changed(self, value):
         """Called when the slider value changes (including from clicks)"""

@@ -1922,8 +1922,3 @@ class MainWindow(QMainWindow):
                 self.class_selector.clear()
                 self.class_selector.addItems(self.classes)
         
-        # Display a confirmation message
-        video_name = os.path.basename(video_path)
-        QMessageBox.information(self, "Classes Updated", 
-                              f"Classes for {video_name} have been updated.")
-

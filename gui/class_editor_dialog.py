@@ -20,7 +20,9 @@ class ClassEditorDialog(QDialog):
         self.annotations_dir = annotations_dir
         self.videos = videos or []
         self.current_video_path = None
-        self.classes = []
+        
+        # Store classes per video
+        self.video_classes = {}  # Dictionary mapping video paths to class lists
         
         self._init_ui()
         self._populate_videos()
@@ -147,6 +149,11 @@ class ClassEditorDialog(QDialog):
         if row < 0 or row >= len(self.videos):
             return
             
+        # Save current classes before switching videos
+        if self.current_video_path and self.current_video_path in self.video_classes:
+            # Ensure current video's classes are saved in memory
+            self.video_classes[self.current_video_path] = self.get_current_classes()
+            
         # Get the selected video path
         if isinstance(self.videos[row], dict) and 'path' in self.videos[row]:
             self.current_video_path = self.videos[row]['path']
@@ -159,11 +166,23 @@ class ClassEditorDialog(QDialog):
         # Update UI
         self.update_class_table()
     
+    def get_current_classes(self):
+        """Get a copy of the current classes with properly assigned IDs"""
+        classes = []
+        for i, cls in enumerate(self.video_classes.get(self.current_video_path, [])):
+            classes.append({
+                "id": i,
+                "name": cls["name"]
+            })
+        return classes
+    
     def load_classes(self):
         """Load classes from classes.csv for the current video"""
-        self.classes = []
-        
         if not self.current_video_path or not self.annotations_dir:
+            return
+            
+        # Check if we've already loaded classes for this video
+        if self.current_video_path in self.video_classes:
             return
             
         # Get the video name without extension
@@ -172,42 +191,50 @@ class ClassEditorDialog(QDialog):
         # Path to classes.csv
         classes_csv_path = os.path.join(self.annotations_dir, video_name, "classes.csv")
         
+        classes = []
         if not os.path.exists(classes_csv_path):
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(classes_csv_path), exist_ok=True)
             
             # Just initialize with unknown class
-            self.classes = [
+            classes = [
                 {"id": 0, "name": "unknown"}
             ]
-            return
-            
-        try:
-            with open(classes_csv_path, 'r', newline='') as csvfile:
-                reader = csv.reader(csvfile)
-                next(reader)  # Skip header row
-                for row in reader:
-                    if len(row) >= 2:
-                        self.classes.append({
-                            "id": int(row[0]),
-                            "name": row[1]
-                        })
-        except Exception as e:
-            print(f"Error loading classes from CSV: {str(e)}")
-            # Initialize with unknown class on error
-            self.classes = [
-                {"id": 0, "name": "unknown"}
-            ]
+        else:
+            try:
+                with open(classes_csv_path, 'r', newline='') as csvfile:
+                    reader = csv.reader(csvfile)
+                    next(reader)  # Skip header row
+                    for row in reader:
+                        if len(row) >= 2:
+                            classes.append({
+                                "id": int(row[0]),
+                                "name": row[1]
+                            })
+            except Exception as e:
+                print(f"Error loading classes from CSV: {str(e)}")
+                # Initialize with unknown class on error
+                classes = [
+                    {"id": 0, "name": "unknown"}
+                ]
+        
+        # Store classes for this video
+        self.video_classes[self.current_video_path] = classes
     
     def update_class_table(self):
         """Update the class table with current classes"""
         self.class_table.setRowCount(0)  # Clear table
         
+        if not self.current_video_path or self.current_video_path not in self.video_classes:
+            return
+            
+        classes = self.video_classes[self.current_video_path]
+        
         # First, ensure IDs are contiguous and sorted
-        for i, cls in enumerate(self.classes):
+        for i, cls in enumerate(classes):
             cls["id"] = i
             
-        for i, cls in enumerate(self.classes):
+        for i, cls in enumerate(classes):
             self.class_table.insertRow(i)
             
             # Index column
@@ -225,11 +252,16 @@ class ClassEditorDialog(QDialog):
                               "Please select a video before adding classes.")
             return
             
+        if self.current_video_path not in self.video_classes:
+            self.video_classes[self.current_video_path] = [{"id": 0, "name": "unknown"}]
+            
+        classes = self.video_classes[self.current_video_path]
+        
         # Get the next available ID - now just use the length as we ensure contiguous IDs
-        next_id = len(self.classes)
+        next_id = len(classes)
             
         # Add new class
-        self.classes.append({
+        classes.append({
             "id": next_id,
             "name": f"new_class_{next_id}"
         })
@@ -238,7 +270,7 @@ class ClassEditorDialog(QDialog):
         self.update_class_table()
         
         # Select the new row
-        new_row = len(self.classes) - 1
+        new_row = len(classes) - 1
         self.class_table.selectRow(new_row)
             
         # Open edit dialog for the new class name
@@ -246,23 +278,31 @@ class ClassEditorDialog(QDialog):
     
     def edit_class_name(self, row):
         """Open a dialog to edit class name"""
-        if row < 0 or row >= len(self.classes):
+        if not self.current_video_path or self.current_video_path not in self.video_classes:
             return
             
-        current_name = self.classes[row]["name"]
+        classes = self.video_classes[self.current_video_path]
+        
+        if row < 0 or row >= len(classes):
+            return
+            
+        current_name = classes[row]["name"]
         text, ok = QInputDialog.getText(
             self,
             "Edit Class Name",
-            f"Enter new name for class {self.classes[row]['id']}:",
+            f"Enter new name for class {classes[row]['id']}:",
             text=current_name
         )
         
         if ok and text:
-            self.classes[row]["name"] = text
+            classes[row]["name"] = text
             self.update_class_table()
     
     def delete_class(self):
         """Delete the selected class from the list"""
+        if not self.current_video_path or self.current_video_path not in self.video_classes:
+            return
+            
         selected_rows = self.class_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.warning(self, "No Selection", "Please select a class to delete.")
@@ -271,8 +311,13 @@ class ClassEditorDialog(QDialog):
         # Get the selected row
         row = selected_rows[0].row()
         
+        classes = self.video_classes[self.current_video_path]
+        
+        if row < 0 or row >= len(classes):
+            return
+            
         # Confirm deletion
-        class_name = self.classes[row]["name"]
+        class_name = classes[row]["name"]
         if QMessageBox.question(
             self, 
             "Confirm Deletion", 
@@ -282,38 +327,45 @@ class ClassEditorDialog(QDialog):
             return
             
         # Remove the class
-        del self.classes[row]
+        del classes[row]
         
         # Update table
         self.update_class_table()
     
     def accept(self):
         """Save changes and close dialog"""
-        if self.current_video_path and self.annotations_dir:
-            self.save_classes()
+        if self.annotations_dir:
+            # First ensure current video's classes are updated in the dictionary
+            if self.current_video_path and self.current_video_path in self.video_classes:
+                self.video_classes[self.current_video_path] = self.get_current_classes()
             
-            # Get class names to emit with signal
-            class_names = [cls["name"] for cls in self.classes]
+            # Save classes for all videos that have been modified
+            for video_path in self.video_classes:
+                self.save_classes(video_path)
             
-            # Emit signal that classes have been updated
-            self.classes_updated.emit(self.current_video_path, class_names)
+            # Show a single success message
+            QMessageBox.information(self, "Success", "All class definitions have been saved.")
             
+            # Emit signal for current video if available
+            if self.current_video_path and self.current_video_path in self.video_classes:
+                class_names = [cls["name"] for cls in self.video_classes[self.current_video_path]]
+                self.classes_updated.emit(self.current_video_path, class_names)
+        
         super().accept()
-    
-    def save_classes(self):
-        """Save classes to CSV file"""
-        if not self.current_video_path or not self.annotations_dir:
+
+    def save_classes(self, video_path):
+        """Save classes to CSV file for a specific video"""
+        if not self.annotations_dir or not video_path or video_path not in self.video_classes:
             return
             
+        classes = self.video_classes[video_path]
+        
         # Update class IDs based on row position
-        for i, cls in enumerate(self.classes):
+        for i, cls in enumerate(classes):
             cls["id"] = i
-            
-        # Update the class table to reflect new IDs
-        self.update_class_table()
         
         # Get the video name without extension
-        video_name = os.path.splitext(os.path.basename(self.current_video_path))[0]
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
         
         # Path to classes.csv
         classes_csv_path = os.path.join(self.annotations_dir, video_name, "classes.csv")
@@ -327,8 +379,8 @@ class ClassEditorDialog(QDialog):
                 writer.writerow(['class_id', 'class_name'])  # Header
                 
                 # Write classes
-                for cls in self.classes:
+                for cls in classes:
                     writer.writerow([cls["id"], cls["name"]])
                     
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save classes: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save classes for {video_name}: {str(e)}")

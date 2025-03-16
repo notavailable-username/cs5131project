@@ -10,6 +10,8 @@ import cv2
 import os
 import numpy as np
 import torch
+
+from gui.class_editor_dialog import ClassEditorDialog
 from .video_player import VideoPlayer
 from .image_annotator_dialog import ImageAnnotatorDialog
 from .video_loader_dialog import VideoLoaderDialog  # Import the new dialog
@@ -85,7 +87,7 @@ class MotionDetectionThread(QThread):
                             'frame_idx': frame_count,
                             'bbox_yolo': [center_x, center_y, norm_width, norm_height],
                             'bbox_abs': [x1, y1, x2, y2],  # Keep absolute coords for visualization
-                            'class': -1,  # Default class as -1 (no class)
+                            'class': 0,  # Default class as 0 (unknown) - changed from -1
                             'timestamp': frame_count / fps
                         }
                         all_detections.append(detection)
@@ -370,6 +372,13 @@ class MainWindow(QMainWindow):
         # Exit action
         exit_action = file_menu.addAction("Exit")
         exit_action.triggered.connect(self.close)
+        
+        # Edit menu
+        edit_menu = menubar.addMenu("Edit")
+        
+        # Class editor action
+        edit_classes_action = edit_menu.addAction("Edit Classes")
+        edit_classes_action.triggered.connect(self.open_class_editor)
         
         # Load menu (new)
         load_menu = menubar.addMenu("Load")
@@ -714,9 +723,9 @@ class MainWindow(QMainWindow):
                             if class_name != "unknown" and class_name != "":
                                 self.classes.append(class_name)
                 
-                # Initialize with default class if empty
+                # Initialize with just "unknown" if empty
                 if len(self.classes) == 0:
-                    self.classes = ["person", "car", "bicycle", "dog", "unknown"]
+                    self.classes = ["unknown"]
                     
                 # Update class selector in the Few-Shot tab
                 if hasattr(self, 'class_selector'):
@@ -725,19 +734,18 @@ class MainWindow(QMainWindow):
                     
             except Exception as e:
                 print(f"Error loading classes from CSV: {str(e)}")
-                self.classes = ["person", "car", "bicycle", "dog", "unknown"]
+                self.classes = ["unknown"]
         else:
-            # Default classes if no CSV exists
-            self.classes = ["person", "car", "bicycle", "dog", "unknown"]
+            # Just unknown if no CSV exists
+            self.classes = ["unknown"]
             
-            # Create a default classes.csv file
+            # Create a default classes.csv file with just unknown
             os.makedirs(os.path.dirname(classes_csv_path), exist_ok=True)
             try:
                 with open(classes_csv_path, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow(['class_id', 'class_name'])
-                    for i, class_name in enumerate(self.classes):
-                        writer.writerow([i, class_name])
+                    writer.writerow([0, "unknown"])
             except Exception as e:
                 print(f"Error creating default classes CSV: {str(e)}")
         
@@ -1238,9 +1246,12 @@ class MainWindow(QMainWindow):
             with open(classes_csv_path, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(['class_id', 'class_name'])
-                writer.writerow(['-1', 'unknown'])  # Default class is unknown/-1
+                writer.writerow([0, 'unknown'])  # Default class is unknown/0 (changed from -1)
+                
+                # Add any other classes that might have been loaded
                 for i, class_name in enumerate(self.classes):
-                    writer.writerow([i, class_name])
+                    if class_name != "unknown":
+                        writer.writerow([i+1, class_name])
 
     def clean_detection_files(self):
         """Remove all files created during the detection process"""
@@ -1883,4 +1894,36 @@ class MainWindow(QMainWindow):
         
         # Update controls state
         self.update_controls_state()
+    
+    def open_class_editor(self):
+        """Open the class editor dialog"""
+        if not self.video_player or not hasattr(self.video_player, 'videos') or not self.video_player.videos:
+            QMessageBox.warning(self, "No Videos", "Please load at least one video before editing classes.")
+            return
+        
+        # Get the list of videos from the video player
+        videos = self.video_player.videos
+        
+        # Create and show the class editor dialog
+        dialog = ClassEditorDialog(self, self.annotations_dir, videos)
+        dialog.classes_updated.connect(self.on_classes_updated)
+        
+        # Show dialog as modal
+        dialog.exec()
+
+    def on_classes_updated(self, video_path, class_names):
+        """Handle when classes are updated in the editor"""
+        # Update the classes list for the current video if it matches
+        if self.current_video_path == video_path:
+            self.classes = class_names
+            
+            # Update class selector in the Few-Shot tab if it exists
+            if hasattr(self, 'class_selector'):
+                self.class_selector.clear()
+                self.class_selector.addItems(self.classes)
+        
+        # Display a confirmation message
+        video_name = os.path.basename(video_path)
+        QMessageBox.information(self, "Classes Updated", 
+                              f"Classes for {video_name} have been updated.")
 

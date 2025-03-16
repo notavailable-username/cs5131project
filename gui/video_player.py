@@ -801,7 +801,7 @@ class VideoPlayer(QWidget):
         self.position_slider.blockSignals(False)
         
         self.frame_input.setText(str(self.current_frame_idx))
-        self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames}")
+        self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames - 1}")
         self.rate_text.setText(str(int(self.frame_rate)))
         
         if self.video_selector.currentIndex() != index:

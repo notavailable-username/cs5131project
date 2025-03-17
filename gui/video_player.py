@@ -1,10 +1,14 @@
 import cv2
 import os
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+import time
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QElapsedTimer
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (QLabel, QMessageBox, QWidget, QVBoxLayout, 
                            QHBoxLayout, QPushButton, QSlider, QLineEdit, QStyle, QSizePolicy, QFrame,
-                           QComboBox)
+                           QComboBox, QProgressBar)
+
+# Import our video buffer system
+from .video_buffer import VideoBuffer
 
 class VideoPlayer(QWidget):
     frame_changed = pyqtSignal(int)  # Signal to notify frame changes
@@ -28,8 +32,30 @@ class VideoPlayer(QWidget):
         self.videos = []  # List of dicts with video info: {path, name, cap, frame_idx, total_frames}
         self.current_video_index = -1  # Index of currently selected video
         
+        # Remove performance monitoring code
+        self.frame_times = []
+        self.dropped_frames = 0
+        self.last_dropped_warning = 0
+        self.adaptive_mode = True  # Keep adaptive mode for smoother playback
+        
+        # Frame timing and framerate management
+        self.target_frame_time = 33.33  # Target time per frame in ms (30 fps)
+        self.actual_frame_time = 33.33  # Actual time per frame in ms
+        self.playback_speed = 1.0  # Playback speed multiplier
+        self.high_performance_mode = False  # Toggle for high performance mode
+        
+        # Initialize video buffer system
+        self.video_buffer = VideoBuffer(self)
+        self.video_buffer.buffer_status_updated.connect(self.on_buffer_status_updated)
+        self.video_buffer.buffer_ready.connect(self.on_buffer_ready)
+        self.video_buffer.end_of_file_reached.connect(self.on_end_of_file_reached)  # Single EOF signal connection
+        self.buffer_ready = False
+        self.eof_reached = False  # Track EOF state
+        
         self.setupUI()
         self._apply_styles()
+        
+        # Remove the separate stats timer
     
     def _invert_icon(self, standard_pixmap):
         """Inverts the colors of a standard icon for better visibility on dark backgrounds"""
@@ -51,6 +77,14 @@ class VideoPlayer(QWidget):
         self.display.setFrameShape(QFrame.Shape.Box)
         self.display.setText("No video loaded")
         main_layout.addWidget(self.display)
+        
+        # Buffer status bar (new)
+        self.buffer_status = QProgressBar()
+        self.buffer_status.setRange(0, 100)
+        self.buffer_status.setValue(0)
+        self.buffer_status.setFormat("Buffer: %p%")
+        self.buffer_status.setTextVisible(True)
+        main_layout.addWidget(self.buffer_status)
         
         # Control layout
         control_layout = QVBoxLayout()
@@ -131,6 +165,13 @@ class VideoPlayer(QWidget):
         self.goto_button.setToolTip("Jump to specified frame")
         self.goto_button.setFixedWidth(button_width)
         first_row_layout.addWidget(self.goto_button)
+        
+        # High Performance Mode toggle (new)
+        self.high_perf_button = QPushButton("High Perf: Off")
+        self.high_perf_button.setFixedWidth(button_width + 30)
+        self.high_perf_button.clicked.connect(self.toggle_high_performance)
+        self.high_perf_button.setToolTip("Toggle high performance mode (might skip frames)")
+        first_row_layout.addWidget(self.high_perf_button)
         
         first_row_layout.addStretch()  # Add spacer for centering
         control_layout.addLayout(first_row_layout)
@@ -226,6 +267,11 @@ class VideoPlayer(QWidget):
         self.info_label = QLabel("No video loaded")
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(self.info_label)
+        
+        # Remove the performance statistics display
+        # self.performance_label = QLabel("FPS: 0.0 | Buffer: 0% | Dropped: 0")
+        # self.performance_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # control_layout.addWidget(self.performance_label)
         
         main_layout.addLayout(control_layout)
         self.setLayout(main_layout)
@@ -376,39 +422,105 @@ class VideoPlayer(QWidget):
             return False
     
     def nextFrameSlot(self):
+        """Display the next frame from the buffer"""
         if self.cap is None or not self.cap.isOpened() or self.current_video_index < 0:
             return
             
+        # Start frame timing with high precision timer
+        start_time = time.perf_counter()
+            
         try:
-            ret, frame = self.cap.read()
-            if ret:
+            # Get frame from buffer
+            expected_frame = self.current_frame_idx + 1
+            
+            # Ensure we don't try to go past the last valid frame
+            last_valid_frame = self.total_frames - 1
+            if expected_frame > last_valid_frame:
+                self.handle_video_end()
+                return
+                
+            frame_idx, frame = self.video_buffer.get_frame(expected_frame)
+            
+            if frame is not None:
+                # We got a valid frame
                 self.current_frame = frame
-                self.current_frame_idx = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+                self.current_frame_idx = frame_idx
                 
                 # Update the current frame index in the videos list
                 if self.current_video_index >= 0 and self.current_video_index < len(self.videos):
                     self.videos[self.current_video_index]["frame_idx"] = self.current_frame_idx
                     self.videos[self.current_video_index]["current_frame"] = frame
                 
+                # Update slider without triggering seek events
+                self.position_slider.blockSignals(True)
                 self.position_slider.setValue(self.current_frame_idx)
+                self.position_slider.blockSignals(False)
+                
+                # Display the frame
                 self.set_image(frame)
                 self.update_frame_counter()
                 self.frame_changed.emit(self.current_frame_idx)
             else:
-                # End of video
-                self.pause()
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                self.current_frame_idx = 0
+                # Buffer is empty - check if EOF reached
+                if self.eof_reached:
+                    # This is the KEY CONDITION: buffer is empty AND EOF flag is set
+                    self.handle_video_end()
+                    return
                 
-                # Update the current frame index in the videos list
-                if self.current_video_index >= 0 and self.current_video_index < len(self.videos):
-                    self.videos[self.current_video_index]["frame_idx"] = 0
-                
-                self.position_slider.setValue(0)
-                self.update_frame_counter()
+                # Buffer is empty but EOF not reached, so we're just waiting for more frames
+                if not self.video_buffer.is_buffer_ready():
+                    self.display.setText("Buffering...")
+                        
+                # High performance mode may try to skip ahead
+                if self.high_performance_mode:
+                    target_frame = min(self.current_frame_idx + 2, last_valid_frame)
+                    self.seek(target_frame, store_frame_idx=True)
+                    self.dropped_frames += 1
+            
+            # Improved adaptive frame rate handling - periodically reset to exact frame rate
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Calculate a more stable target time
+            if self.adaptive_mode:
+                # Less aggressive adaptation with reset to base timer every 30 frames
+                if self.current_frame_idx % 30 == 0:
+                    # Periodically reset to exact frame rate from video metadata
+                    new_interval = int(1000 / self.frame_rate)
+                    if self.timer.interval() != new_interval:
+                        self.timer.setInterval(new_interval)
+                elif elapsed_ms > self.target_frame_time * 1.5:  # If significantly slower
+                    # Increase interval to avoid dropping frames, but less aggressively
+                    new_interval = min(100, int(self.timer.interval() * 1.1))
+                    if new_interval != self.timer.interval():
+                        self.timer.setInterval(new_interval)
+                elif elapsed_ms < self.target_frame_time * 0.8:  # If significantly faster
+                    # Decrease interval gradually to maintain accuracy
+                    new_interval = max(int(self.target_frame_time * 0.9), int(self.timer.interval() * 0.98))
+                    if new_interval != self.timer.interval():
+                        self.timer.setInterval(new_interval)
+                        
         except Exception as e:
-            print(f"Error reading next frame: {str(e)}")
+            print(f"Error in nextFrameSlot: {str(e)}")
     
+    def handle_video_end(self):
+        """Centralized method to handle when video truly ends (EOF reached and buffer empty)"""
+        # Pause playback
+        self.pause()
+        
+        # Ensure position is at last valid frame
+        last_frame = self.total_frames - 1
+        if self.current_frame_idx != last_frame:
+            self.current_frame_idx = last_frame
+            self.position_slider.blockSignals(True)
+            self.position_slider.setValue(last_frame)
+            self.position_slider.blockSignals(False)
+            self.update_frame_counter()
+        
+        # Reset EOF flag for next playback
+        self.eof_reached = False
+        
+        print(f"Video ended at frame {self.current_frame_idx} (total frames: {self.total_frames})")
+
     def set_image(self, frame):
         if frame is None:
             return
@@ -524,10 +636,31 @@ class VideoPlayer(QWidget):
             QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for frame rate")
     
     def play(self):
+        """Start video playback"""
         if self.cap is not None and self.cap.isOpened() and self.current_video_index >= 0:
-            # Calculate milliseconds per frame for smoother playback
-            ms_per_frame = int(1000 / self.frame_rate)
-            self.timer.start(ms_per_frame)
+            # If at the end of the video, go back to beginning
+            if self.current_frame_idx >= self.total_frames - 1:
+                self.current_frame_idx = 0
+                self.seek(0)
+            
+            # Start or ensure buffer is running
+            if not self.video_buffer.worker_thread or not self.video_buffer.worker_thread.isRunning():
+                current_video_path = self.videos[self.current_video_index]["path"]
+                self.video_buffer.start_buffering(current_video_path, self.current_frame_idx)
+            else:
+                self.video_buffer.resume()
+            
+            # Calculate milliseconds per frame using exact video frame rate
+            ms_per_frame = 1000 / self.frame_rate  # Don't round to int for more accuracy
+            self.target_frame_time = ms_per_frame
+            
+            # Wait for buffer to be ready before starting playback
+            if not self.buffer_ready and not self.video_buffer.is_buffer_ready():
+                self.display.setText("Buffering...")
+                return
+            
+            # Start the playback timer with precise timing
+            self.timer.start(int(ms_per_frame))
             self._playing = True
             self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPause))
         else:
@@ -537,6 +670,9 @@ class VideoPlayer(QWidget):
         self.timer.stop()
         self._playing = False
         self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        
+        # Pause the buffer worker as well
+        self.video_buffer.pause()
     
     def is_playing(self):
         return self._playing
@@ -562,21 +698,30 @@ class VideoPlayer(QWidget):
             return False
             
         try:
+            # Make sure we don't seek past the end of the video or before start
             safe_frame_idx = max(0, min(frame_idx, self.total_frames - 1))
+            
+            # Update buffer position
+            self.video_buffer.seek(safe_frame_idx)
+            
+            # Update local frame index
+            self.current_frame_idx = safe_frame_idx
+            
+            # Store the frame index in the video info for this specific video
+            if store_frame_idx and self.current_video_index >= 0 and self.current_video_index < len(self.videos):
+                self.videos[self.current_video_index]["frame_idx"] = safe_frame_idx
+            
+            # Update UI
+            self.position_slider.blockSignals(True)
+            self.position_slider.setValue(safe_frame_idx)
+            self.position_slider.blockSignals(False)
+            
+            # For immediate feedback, read directly from the video
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, safe_frame_idx)
             ret, frame = self.cap.read()
             
             if ret:
                 self.current_frame = frame
-                self.current_frame_idx = safe_frame_idx
-                
-                if store_frame_idx and self.current_video_index >= 0:
-                    self.videos[self.current_video_index]["frame_idx"] = frame_idx
-                
-                self.position_slider.blockSignals(True)
-                self.position_slider.setValue(safe_frame_idx)
-                self.position_slider.blockSignals(False)
-                
                 self.set_image(frame)
                 self.update_frame_counter()
                 self.frame_changed.emit(safe_frame_idx)
@@ -604,7 +749,8 @@ class VideoPlayer(QWidget):
         """Move to the next frame"""
         if self.cap is not None:
             self.pause()  # Pause playback
-            next_frame = self.current_frame_idx + 1
+            # Make sure we don't go past the end
+            next_frame = min(self.current_frame_idx + 1, self.total_frames - 1)
             self.seek(next_frame)
     
     def prev_frame(self):
@@ -629,6 +775,7 @@ class VideoPlayer(QWidget):
         """Skip forward by the specified number of frames"""
         if self.cap is not None:
             self.pause()
+            # Ensure we don't exceed the total frames
             target_frame = min(self.current_frame_idx + self.skip_frames, self.total_frames - 1)
             self.seek(target_frame)
     
@@ -705,25 +852,56 @@ class VideoPlayer(QWidget):
                 QMessageBox.critical(None, "Error", f"Could not open video file: {video_path}")
                 return False
                 
-            # Get video properties
+            # Get video properties - critical for accurate frame rates
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             frame_rate = cap.get(cv2.CAP_PROP_FPS)
-            if frame_rate <= 0:
-                frame_rate = 30  # Fallback frame rate
+            
+            # Handle invalid frame rates from metadata
+            if frame_rate <= 0 or frame_rate > 1000:  # Invalid or unrealistic FPS
+                # Try to estimate FPS by analyzing the video more accurately
+                frame_count = 0
+                start_time = time.perf_counter()
+                
+                # Sample up to 100 frames to get a more accurate estimate
+                max_samples = min(100, total_frames)
+                for _ in range(max_samples):
+                    ret = cap.grab()  # grab() is faster than read() as it doesn't decode
+                    if not ret:
+                        break
+                    frame_count += 1
+                    
+                # If we grabbed at least 10 frames, calculate FPS
+                if frame_count >= 10:
+                    elapsed = time.perf_counter() - start_time
+                    if elapsed > 0:
+                        estimated_fps = frame_count / elapsed
+                        # Apply reasonable bounds to the estimated FPS
+                        frame_rate = max(min(estimated_fps, 120), 10)
+                    else:
+                        frame_rate = 30  # Default if timing failed
+                else:
+                    frame_rate = 30  # Default fallback
+                
+                # Reset position to start
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                
+                print(f"Estimated video frame rate: {frame_rate:.2f} FPS")
+            else:
+                print(f"Using video frame rate from metadata: {frame_rate:.2f} FPS")
             
             # Read the first frame for preview
             ret, first_frame = cap.read()
             # Reset position to start
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
-            # Create video info dictionary
+            # Create video info dictionary with exact frame rate (not rounded)
             video_info = {
                 "path": video_path,
                 "name": display_name,
                 "cap": cap,
                 "frame_idx": 0,  # Always start at frame 0 for newly added videos
                 "total_frames": total_frames,
-                "frame_rate": frame_rate,
+                "frame_rate": frame_rate,  # Store exact frame rate
                 "current_frame": first_frame.copy() if ret else None
             }
             
@@ -733,8 +911,9 @@ class VideoPlayer(QWidget):
             # Update the video selector dropdown
             self.video_selector.addItem(display_name)
             
-            # If this is the first video, select it
+            # If this is the first video, initialize buffer and select it
             if len(self.videos) == 1:
+                self.video_buffer.start_buffering(video_path, 0)
                 self.switch_to_video(0)
             else:
                 # Otherwise just select the newly added video
@@ -779,30 +958,45 @@ class VideoPlayer(QWidget):
         if index == self.current_video_index:
             return True
         
+        # Store current video state if there is one
         if self.current_video_index >= 0 and self.current_video_index < len(self.videos):
             current_video = self.videos[self.current_video_index]
+            # Make sure to store current frame position, but validate it's in range
             if self.cap and self.cap.isOpened():
-                current_video["frame_idx"] = self.current_frame_idx
+                max_frame = max(0, current_video["total_frames"] - 1)
+                safe_frame = min(self.current_frame_idx, max_frame)
+                current_video["frame_idx"] = safe_frame
         
         was_playing = self._playing
         self.pause()
         
+        # Clear buffer and stop worker thread
+        self.video_buffer.stop_buffering()
+        self.buffer_ready = False
+        
+        # Update current video info
         self.current_video_index = index
         video_info = self.videos[index]
         self.cap = video_info["cap"]
         self.total_frames = video_info["total_frames"]
-        self.frame_rate = video_info["frame_rate"]
-        self.current_frame_idx = video_info["frame_idx"]
         
+        # Always use the exact frame rate from the video metadata without rounding
+        self.frame_rate = video_info["frame_rate"]
+        
+        # Make sure the stored frame index is valid for this video
+        self.current_frame_idx = min(video_info["frame_idx"], max(0, self.total_frames - 1))
+        
+        # Update UI elements
         self.position_slider.blockSignals(True)
         self.position_slider.setRange(0, max(0, self.total_frames - 1))
-        safe_ui_pos = min(self.current_frame_idx, max(0, self.total_frames - 1))
-        self.position_slider.setValue(safe_ui_pos)
+        self.position_slider.setValue(self.current_frame_idx)
         self.position_slider.blockSignals(False)
         
         self.frame_input.setText(str(self.current_frame_idx))
         self.frame_counter.setText(f"Frame: {self.current_frame_idx} / {self.total_frames - 1}")
-        self.rate_text.setText(str(int(self.frame_rate)))
+        
+        # Use the exact frame rate for the rate_text field
+        self.rate_text.setText(f"{self.frame_rate:.2f}")
         
         if self.video_selector.currentIndex() != index:
             self.video_selector.blockSignals(True)
@@ -811,6 +1005,14 @@ class VideoPlayer(QWidget):
         
         self.update_video_info()
         
+        # Reset performance metrics for the new video
+        self.frame_times = []
+        self.dropped_frames = 0
+        
+        # Start buffering the new video
+        self.video_buffer.start_buffering(video_info["path"], self.current_frame_idx)
+        
+        # Show the initial frame
         try:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
             ret, frame = self.cap.read()
@@ -830,6 +1032,7 @@ class VideoPlayer(QWidget):
         
         self.update_video_navigation_buttons()
         
+        # Restart playback if it was playing
         if was_playing:
             self.play()
         
@@ -862,6 +1065,9 @@ class VideoPlayer(QWidget):
         # Pause playback if active
         self.pause()
         
+        # Stop buffering
+        self.video_buffer.stop_buffering()
+        
         # Close all video captures
         for video in self.videos:
             if 'cap' in video and video['cap'] is not None:
@@ -875,6 +1081,7 @@ class VideoPlayer(QWidget):
         self._playing = False
         self.cap = None
         self.current_frame = None
+        self.buffer_ready = False
         
         # Clear the video selector dropdown
         self.video_selector.clear()
@@ -883,6 +1090,7 @@ class VideoPlayer(QWidget):
         self.display.setText("No video loaded")
         self.info_label.setText("No video loaded")
         self.frame_counter.setText("Frame: 0 / 0")
+        self.buffer_status.setValue(0)
         
         # Reset the slider
         self.position_slider.setRange(0, 0)
@@ -905,8 +1113,51 @@ class VideoPlayer(QWidget):
         self.video_info = f"Source: {self.video_source_type} | Resolution: {width}x{height} | FPS: {self.frame_rate:.2f} | Frames: {self.total_frames}"
         self.info_label.setText(self.video_info)
 
+    # Remove the update_performance_display method as it's no longer needed
+    
+    def toggle_high_performance(self):
+        """Toggle high performance mode"""
+        self.high_performance_mode = not self.high_performance_mode
+        
+        # Update button text
+        self.high_perf_button.setText(f"High Perf: {'On' if self.high_performance_mode else 'Off'}")
+        
+        # If turning on high performance mode, adjust buffer size
+        if self.high_performance_mode:
+            # When in high performance mode, we need a larger buffer
+            self.video_buffer.buffer_size = max(60, self.video_buffer.buffer_size)
+        else:
+            # Reset to default buffer size when returning to normal mode
+            self.video_buffer.adjust_buffer_size()
+    
+    def on_buffer_status_updated(self, percentage):
+        """Handle buffer status updates"""
+        self.buffer_status.setValue(int(percentage))
+    
+    def on_buffer_ready(self):
+        """Handle buffer ready signal"""
+        self.buffer_ready = True
+        if self._playing:
+            # If we were waiting for buffer, start playback now
+            self.play()
+    
+    def on_end_of_file_reached(self):
+        """Handle the single EOF signal - just sets the flag, doesn't stop playback"""
+        self.eof_reached = True
+        print(f"End of file reached. Buffer has {self.video_buffer.frame_buffer.qsize()} frames remaining.")
+        # Don't pause playback here - let nextFrameSlot handle it when buffer is empty
+    
     def __del__(self):
         """Destructor to ensure resources are properly released"""
+        # Stop timers
+        if hasattr(self, 'timer') and self.timer.isActive():
+            self.timer.stop()
+            
+        # Stop buffer
+        if hasattr(self, 'video_buffer'):
+            self.video_buffer.stop_buffering()
+            
+        # Then release video captures
         if hasattr(self, 'videos'):
             for video in self.videos:
                 if 'cap' in video and video['cap'] is not None:

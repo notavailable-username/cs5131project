@@ -1346,9 +1346,6 @@ class MainWindow(QMainWindow):
         # Re-enable UI controls
         self.toggle_ui_during_detection(False)
         
-        # Cancel batch processing
-        self.batch_processing = False
-        
         # Restore the player to the original frame position
         if self.current_video_path in self.video_frame_positions:
             self.video_player.seek(self.video_frame_positions[self.current_video_path])
@@ -1903,30 +1900,33 @@ class MainWindow(QMainWindow):
             self.save_video_motion_settings(self.current_video_path)
         
         # Update current video path
+        old_path = self.current_video_path
         self.current_video_path = self.video_player.get_current_video_path()
         
-        # Load settings for new video and update UI
-        self.update_ui_from_settings()
-        
-        # Load classes for this video
-        self.load_classes_from_csv()
-        
-        # Clear detection progress and frame labels
-        if hasattr(self, 'detection_progress'):
-            self.detection_progress.setValue(0)
-        if hasattr(self, 'frame_number_label'):
-            self.frame_number_label.setText("Current frame: -")
+        # Only proceed if the path actually changed
+        if old_path != self.current_video_path:
+            # Load settings for new video and update UI
+            self.update_ui_from_settings()
             
-        # Update detection summary if we have results for this video
-        if self.current_video_path in self.all_detections:
-            detections = self.all_detections[self.current_video_path]
-            unique_frames = len(set([d['frame_idx'] for d in detections]))
-            self.detection_summary.setText(f"Detected {len(detections)} objects in {unique_frames} frames")
-        else:
-            self.detection_summary.setText("No detections yet")
+            # Load classes for this video
+            self.load_classes_from_csv()
             
-        # Update uncertain frames list if we have those for this video
-        self.update_uncertain_frames_list()
+            # Clear detection progress and frame labels
+            if hasattr(self, 'detection_progress'):
+                self.detection_progress.setValue(0)
+            if hasattr(self, 'frame_number_label'):
+                self.frame_number_label.setText("Current frame: -")
+                
+            # Update detection summary if we have results for this video
+            if self.current_video_path in self.all_detections:
+                detections = self.all_detections[self.current_video_path]
+                unique_frames = len(set([d['frame_idx'] for d in detections]))
+                self.detection_summary.setText(f"Detected {len(detections)} objects in {unique_frames} frames")
+            else:
+                self.detection_summary.setText("No detections yet")
+                
+            # Update uncertain frames list if we have those for this video
+            self.update_uncertain_frames_list()
         
         # Update controls state
         self.update_controls_state()

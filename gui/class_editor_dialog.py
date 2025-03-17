@@ -188,8 +188,8 @@ class ClassEditorDialog(QDialog):
         # Get the video name without extension
         video_name = os.path.splitext(os.path.basename(self.current_video_path))[0]
         
-        # Path to classes.csv
-        classes_csv_path = os.path.join(self.annotations_dir, video_name, "classes.csv")
+        # Path to classes.csv - updated to include "videos" in the path
+        classes_csv_path = os.path.join(self.annotations_dir, "videos", video_name, "classes.csv")
         
         classes = []
         if not os.path.exists(classes_csv_path):
@@ -367,8 +367,8 @@ class ClassEditorDialog(QDialog):
         # Get the video name without extension
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         
-        # Path to classes.csv
-        classes_csv_path = os.path.join(self.annotations_dir, video_name, "classes.csv")
+        # Path to classes.csv - updated to include "videos" in the path
+        classes_csv_path = os.path.join(self.annotations_dir, "videos", video_name, "classes.csv")
         
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(classes_csv_path), exist_ok=True)

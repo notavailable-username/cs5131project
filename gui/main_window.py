@@ -227,7 +227,10 @@ class MainWindow(QMainWindow):
         # Create base directories
         self.datasets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
         self.annotations_dir = os.path.join(self.datasets_dir, "annotations")
-        os.makedirs(self.annotations_dir, exist_ok=True)
+        
+        # Create annotations/videos directory as well
+        self.videos_annotations_dir = os.path.join(self.annotations_dir, "videos")
+        os.makedirs(self.videos_annotations_dir, exist_ok=True)
         
         self.process_thread = None
         self.motion_thread = None
@@ -652,7 +655,8 @@ class MainWindow(QMainWindow):
         video_name = self.get_video_name()
         if not video_name:
             return None
-        video_ann_dir = os.path.join(self.annotations_dir, video_name)
+        # Updated to include "videos" in the path
+        video_ann_dir = os.path.join(self.annotations_dir, "videos", video_name)
         os.makedirs(video_ann_dir, exist_ok=True)
         return video_ann_dir
     
@@ -665,7 +669,8 @@ class MainWindow(QMainWindow):
         if subdir:
             directory = os.path.join(self.datasets_dir, subdir, video_name)
         else:
-            directory = os.path.join(self.annotations_dir, video_name)
+            # Updated to include "videos" in the path for annotations
+            directory = os.path.join(self.annotations_dir, "videos", video_name)
             
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, f"frame_{frame_idx:06d}")
@@ -707,7 +712,8 @@ class MainWindow(QMainWindow):
             return
             
         video_name = self.get_video_name()
-        classes_csv_path = os.path.join(self.annotations_dir, video_name, "classes.csv")
+        # Updated to include "videos" in the path
+        classes_csv_path = os.path.join(self.annotations_dir, "videos", video_name, "classes.csv")
         
         self.classes = []
         
@@ -1218,7 +1224,8 @@ class MainWindow(QMainWindow):
         all_detections = self.all_detections[self.current_video_path]
         
         video_name = self.get_video_name()
-        annotations_dir = os.path.join(self.annotations_dir, video_name)
+        # Updated to include "videos" in the path
+        annotations_dir = os.path.join(self.annotations_dir, "videos", video_name)
         os.makedirs(annotations_dir, exist_ok=True)
         
         # Group detections by frame
@@ -1260,8 +1267,8 @@ class MainWindow(QMainWindow):
             
         video_name = self.get_video_name()
         
-        # Clean annotations directory
-        annotations_dir = os.path.join(self.annotations_dir, video_name)
+        # Clean annotations directory - updated to include "videos" in the path
+        annotations_dir = os.path.join(self.annotations_dir, "videos", video_name)
         if os.path.exists(annotations_dir):
             try:
                 import shutil
@@ -1611,8 +1618,8 @@ class MainWindow(QMainWindow):
             
         video_name = self.get_video_name()
         
-        # Clean annotations directory
-        annotations_dir = os.path.join(self.annotations_dir, video_name)
+        # Clean annotations directory - updated to include "videos" in the path
+        annotations_dir = os.path.join(self.annotations_dir, "videos", video_name)
         if os.path.exists(annotations_dir):
             try:
                 import shutil
@@ -1921,4 +1928,3 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'class_selector'):
                 self.class_selector.clear()
                 self.class_selector.addItems(self.classes)
-        

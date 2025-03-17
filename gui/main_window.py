@@ -10,6 +10,7 @@ import cv2
 import os
 import numpy as np
 import torch
+import json
 
 from gui.class_editor_dialog import ClassEditorDialog
 from .video_player import VideoPlayer
@@ -216,6 +217,9 @@ class MainWindow(QMainWindow):
         self.support_examples = {}  # {class_name: [image_patches]}
         self.classes = []
         
+        # Add video motion settings dictionary
+        self.video_motion_settings = {}  # Dictionary mapping video paths to motion detection settings
+        
         # Add frame position tracking per video
         self.video_frame_positions = {}  # Dictionary mapping video paths to frame positions
         
@@ -231,6 +235,10 @@ class MainWindow(QMainWindow):
         # Create annotations/videos directory as well
         self.videos_annotations_dir = os.path.join(self.annotations_dir, "videos")
         os.makedirs(self.videos_annotations_dir, exist_ok=True)
+        
+        # Create video_configs directory inside annotations dir instead
+        self.video_configs_dir = os.path.join(self.annotations_dir, "video_configs")
+        os.makedirs(self.video_configs_dir, exist_ok=True)
         
         self.process_thread = None
         self.motion_thread = None
@@ -988,32 +996,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing Input", "Please select a video first.")
             return
         
-        # No need to store frame position here as the VideoPlayer class
-        # already tracks this per video in its internal state
+        # Save current frame position before starting detection
+        self.video_frame_positions[self.current_video_path] = self.video_player.get_current_frame_idx()
         
-        # Validate the sensitivity value from text field
-        try:
-            sensitivity_value = int(self.detection_threshold.text())
-            # Bounds check removed - accepting any valid integer
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for detection sensitivity.")
-            self.detection_threshold.setText("25")  # Reset to default
-            return
+        # Save current settings from UI to memory and to file
+        self.update_settings_from_ui()
+        self.save_video_motion_settings(self.current_video_path)
         
-        # Get and validate the frame interval value
-        try:
-            frame_interval = int(self.frame_interval.text())
-            if frame_interval < 1:
-                QMessageBox.warning(self, "Invalid Input", "Frame interval must be at least 1.")
-                self.frame_interval.setText("2")  # Reset to default
-                return
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for frame interval.")
-            self.frame_interval.setText("2")  # Reset to default
-            return
-        
-        # Update motion detector settings based on UI input
-        self.motion_detector.varThreshold = sensitivity_value
+        # Get settings for detection
+        settings = self.video_motion_settings[self.current_video_path]["motion_detection_settings"]
+        sensitivity_value = settings["sensitivity"]
+        frame_interval = settings["frame_interval"]
         
         # Clean up any previous detection results for this video
         self.clean_detection_files()
@@ -1021,13 +1014,17 @@ class MainWindow(QMainWindow):
         # Disable UI controls during detection
         self.toggle_ui_during_detection(True)
         
-        # Start motion detection thread
+        # Create a fresh MotionDetector instance with the correct settings
+        md_conf = self.config.get("motion_detector", {}).copy()
+        md_conf["varThreshold"] = sensitivity_value
+        video_motion_detector = MotionDetector(**md_conf)
+        
+        # Start motion detection thread with the specific detector for this video
         self.motion_thread = MotionDetectionThread(
-            self.current_video_path, self.motion_detector
+            self.current_video_path, video_motion_detector
         )
         
         # Override the thread's frame_interval with user input
-        # We need to do this after creating the thread but before starting it
         cap = cv2.VideoCapture(self.current_video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
@@ -1047,27 +1044,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing Input", "No videos loaded.")
             return
         
-        # Get the sensitivity and frame interval values from UI
-        try:
-            sensitivity_value = int(self.detection_threshold.text())
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for detection sensitivity.")
-            self.detection_threshold.setText("25")  # Reset to default
-            return
+        # Save current video position before starting batch detection
+        if self.current_video_path:
+            self.video_frame_positions[self.current_video_path] = self.video_player.get_current_frame_idx()
         
-        try:
-            frame_interval = int(self.frame_interval.text())
-            if frame_interval < 1:
-                QMessageBox.warning(self, "Invalid Input", "Frame interval must be at least 1.")
-                self.frame_interval.setText("2")  # Reset to default
-                return
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number for frame interval.")
-            self.frame_interval.setText("2")  # Reset to default
-            return
-        
-        # Update motion detector settings
-        self.motion_detector.varThreshold = sensitivity_value
+        # Save current settings from UI before starting batch processing
+        if self.current_video_path:
+            self.update_settings_from_ui()
+            self.save_video_motion_settings(self.current_video_path)
         
         # Initialize batch processing
         self.batch_processing = True
@@ -1076,7 +1060,7 @@ class MainWindow(QMainWindow):
         
         # Start with the first video
         self.process_next_video_in_queue()
-    
+        
     def process_next_video_in_queue(self):
         """Process the next video in the queue for batch detection"""
         if not self.batch_processing or not self.video_queue:
@@ -1086,7 +1070,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Batch Processing Complete", 
                                   "Motion detection completed on all videos.")
             return
-        
+            
         # Move to next video in queue
         self.current_batch_index += 1
         if self.current_batch_index >= len(self.video_queue):
@@ -1112,6 +1096,18 @@ class MainWindow(QMainWindow):
             self.video_player.switch_to_video(next_video_index)
             self.current_video_path = next_video_path
             
+            # Load settings for this video
+            settings = self.load_video_motion_settings(next_video_path)
+            md_settings = settings["motion_detection_settings"]
+            sensitivity_value = md_settings["sensitivity"]
+            frame_interval_value = md_settings["frame_interval"]
+            
+            # Update UI with these settings
+            if hasattr(self, 'detection_threshold'):
+                self.detection_threshold.setText(str(sensitivity_value))
+            if hasattr(self, 'frame_interval'):
+                self.frame_interval.setText(str(frame_interval_value))
+            
             # Update UI to show current video being processed
             video_name = os.path.basename(next_video_path)
             self.detection_summary.setText(f"Processing video {self.current_batch_index + 1} of {len(self.video_queue)}: {video_name}")
@@ -1122,15 +1118,17 @@ class MainWindow(QMainWindow):
             # Disable UI controls during detection
             self.toggle_ui_during_detection(True)
             
-            # Get frame interval value from text field
-            try:
-                frame_interval_value = int(self.frame_interval.text())
-            except ValueError:
-                frame_interval_value = 2  # Default if invalid
+            # Create a fresh MotionDetector instance with the correct settings for this video
+            # Get the base configuration from the main config
+            md_conf = self.config.get("motion_detector", {}).copy()
+            # Override with video-specific settings
+            md_conf["varThreshold"] = sensitivity_value
+            # Create a new instance with these settings
+            video_motion_detector = MotionDetector(**md_conf)
             
-            # Start motion detection
+            # Start motion detection with the video-specific detector
             self.motion_thread = MotionDetectionThread(
-                self.current_video_path, self.motion_detector
+                self.current_video_path, video_motion_detector
             )
             
             # Set frame interval for the thread
@@ -1161,8 +1159,17 @@ class MainWindow(QMainWindow):
     def update_detection_display(self, frame):
         """Update the display with the current detection frame"""
         self.current_frame = frame
+        
+        # Get the current motion detector being used by the active thread
+        current_detector = None
+        if self.motion_thread and self.motion_thread.isRunning():
+            current_detector = self.motion_thread.motion_detector
+        else:
+            # Fall back to default detector if no thread is running
+            current_detector = self.motion_detector
+        
         # Draw bounding boxes from motion detector
-        boxes = self.motion_detector.detect(frame)
+        boxes = current_detector.detect(frame)
         frame_annotations = []
         
         for box in boxes:
@@ -1195,7 +1202,7 @@ class MainWindow(QMainWindow):
         
         # Restore the player to the original frame position using the per-video tracking
         if self.current_video_path in self.video_frame_positions:
-            self.video_player.seek(max(0, self.video_frame_positions[self.current_video_path]))
+            self.video_player.seek(self.video_frame_positions[self.current_video_path])
         
         # If we're in batch mode, continue with the next video
         if self.batch_processing:
@@ -1341,6 +1348,10 @@ class MainWindow(QMainWindow):
         
         # Cancel batch processing
         self.batch_processing = False
+        
+        # Restore the player to the original frame position
+        if self.current_video_path in self.video_frame_positions:
+            self.video_player.seek(self.video_frame_positions[self.current_video_path])
     
     def add_support_example(self):
         # Get current class
@@ -1589,14 +1600,24 @@ class MainWindow(QMainWindow):
             self.motion_thread.stop()
             self.motion_thread.wait()
             
-            QMessageBox.information(self, "Detection Aborted", "Motion detection was aborted.")
+            message = "Motion detection was aborted."
+            if self.batch_processing:
+                message += " Batch processing canceled."
+                self.batch_processing = False
+            
+            QMessageBox.information(self, "Detection Aborted", message)
             
         elif self.process_thread and self.process_thread.isRunning():
             # Stop the video processing thread if that's running instead
             self.process_thread.stop()
             self.process_thread.wait()
             
-            QMessageBox.information(self, "Detection Aborted", "Video processing was aborted.")
+            message = "Video processing was aborted."
+            if self.batch_processing:
+                message += " Batch processing canceled."
+                self.batch_processing = False
+            
+            QMessageBox.information(self, "Detection Aborted", message)
         
         # Reset progress and UI regardless of which thread was running
         self.detection_progress.setValue(0)
@@ -1876,8 +1897,16 @@ class MainWindow(QMainWindow):
     
     def on_video_changed(self, index):
         """Handle video change in the player"""
+        # If there was a previous video, save its settings
+        if self.current_video_path:
+            self.update_settings_from_ui()
+            self.save_video_motion_settings(self.current_video_path)
+        
         # Update current video path
         self.current_video_path = self.video_player.get_current_video_path()
+        
+        # Load settings for new video and update UI
+        self.update_ui_from_settings()
         
         # Load classes for this video
         self.load_classes_from_csv()
@@ -1928,3 +1957,96 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'class_selector'):
                 self.class_selector.clear()
                 self.class_selector.addItems(self.classes)
+    
+    def load_video_motion_settings(self, video_path):
+        """Load motion detection settings for a specific video from JSON file"""
+        if not video_path:
+            return None
+            
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        config_file = os.path.join(self.video_configs_dir, f"{video_name}.json")
+        
+        default_settings = {
+            "motion_detection_settings": {
+                "sensitivity": 25,  # Default sensitivity
+                "frame_interval": 2  # Default frame interval (fps to process)
+            }
+        }
+        
+        # If settings already loaded in memory, return those
+        if video_path in self.video_motion_settings:
+            return self.video_motion_settings[video_path]
+            
+        # Otherwise try to load from file
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as f:
+                    settings = json.load(f)
+                # Cache the settings in memory
+                self.video_motion_settings[video_path] = settings
+                return settings
+            except Exception as e:
+                print(f"Error loading motion settings for {video_name}: {e}")
+        
+        # If file doesn't exist or has errors, use defaults and save them
+        self.video_motion_settings[video_path] = default_settings
+        self.save_video_motion_settings(video_path)
+        
+        return default_settings
+    
+    def save_video_motion_settings(self, video_path):
+        """Save motion detection settings for a specific video to JSON file"""
+        if not video_path or video_path not in self.video_motion_settings:
+            return
+        
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        config_file = os.path.join(self.video_configs_dir, f"{video_name}.json")
+        
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(self.video_motion_settings[video_path], f, indent=4)
+        except Exception as e:
+            print(f"Error saving motion settings for {video_name}: {e}")
+    
+    def update_ui_from_settings(self):
+        """Update UI controls based on loaded settings for the current video"""
+        if not self.current_video_path:
+            return
+            
+        settings = self.load_video_motion_settings(self.current_video_path)
+        if not settings:
+            return
+            
+        md_settings = settings.get("motion_detection_settings", {})
+        
+        # Update sensitivity input
+        if hasattr(self, 'detection_threshold') and 'sensitivity' in md_settings:
+            self.detection_threshold.setText(str(md_settings['sensitivity']))
+            
+        # Update frame interval input
+        if hasattr(self, 'frame_interval') and 'frame_interval' in md_settings:
+            self.frame_interval.setText(str(md_settings['frame_interval']))
+    
+    def update_settings_from_ui(self):
+        """Update settings dictionary from UI controls for current video"""
+        if not self.current_video_path:
+            return
+            
+        # Get current settings or create new
+        if self.current_video_path not in self.video_motion_settings:
+            self.video_motion_settings[self.current_video_path] = {
+                "motion_detection_settings": {}
+            }
+        
+        md_settings = self.video_motion_settings[self.current_video_path]["motion_detection_settings"]
+        
+        # Update from UI values
+        try:
+            md_settings["sensitivity"] = int(self.detection_threshold.text())
+        except (ValueError, AttributeError):
+            md_settings["sensitivity"] = 25  # Default if invalid
+            
+        try:
+            md_settings["frame_interval"] = int(self.frame_interval.text())
+        except (ValueError, AttributeError):
+            md_settings["frame_interval"] = 2  # Default if invalid

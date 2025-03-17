@@ -38,11 +38,22 @@ class VideoPlayer(QWidget):
         self.last_dropped_warning = 0
         self.adaptive_mode = True  # Keep adaptive mode for smoother playback
         
-        # Frame timing and framerate management
+        # Enhanced frame timing and framerate management
         self.target_frame_time = 33.33  # Target time per frame in ms (30 fps)
         self.actual_frame_time = 33.33  # Actual time per frame in ms
         self.playback_speed = 1.0  # Playback speed multiplier
-        self.high_performance_mode = False  # Toggle for high performance mode
+        self.high_adaptive_fps_mode = False  # Toggle for high adaptive FPS mode
+        self.adaptive_fps_offset = 1000.0  # Custom offset for high adaptive FPS mode (in ms)
+        
+        # Improved precise timing tools using perf_counter instead of QElapsedTimer
+        self.last_frame_time = None  # Will store the last frame timestamp
+        self.ewma_factor = 0.4  # Increased from 0.2 for faster adaptation
+        self.ewma_frame_time = 33.33  # Initial estimate for frame processing time
+        self.base_adjustment_rate = 1  # Significantly higher adjustment rate (was 0.5)
+        self.adaptive_adjustment = True  # Enable adaptive adjustment rate
+        self.frame_time_history = []  # Track recent frame times for stability detection
+        self.history_size = 5  # Number of frame times to track for stability
+        self.stable_threshold = 1.0  # ms threshold for considering timing stable
         
         # Initialize video buffer system
         self.video_buffer = VideoBuffer(self)
@@ -166,11 +177,11 @@ class VideoPlayer(QWidget):
         self.goto_button.setFixedWidth(button_width)
         first_row_layout.addWidget(self.goto_button)
         
-        # High Performance Mode toggle (new)
-        self.high_perf_button = QPushButton("High Perf: Off")
+        # High Adaptive FPS Mode toggle (renamed from high performance mode)
+        self.high_perf_button = QPushButton("Adaptive: Normal")
         self.high_perf_button.setFixedWidth(button_width + 30)
-        self.high_perf_button.clicked.connect(self.toggle_high_performance)
-        self.high_perf_button.setToolTip("Toggle high performance mode (might skip frames)")
+        self.high_perf_button.clicked.connect(self.toggle_high_adaptive_fps)
+        self.high_perf_button.setToolTip("Toggle between normal and high adaptive FPS modes")
         first_row_layout.addWidget(self.high_perf_button)
         
         first_row_layout.addStretch()  # Add spacer for centering
@@ -470,35 +481,65 @@ class VideoPlayer(QWidget):
                 # Buffer is empty but EOF not reached, so we're just waiting for more frames
                 if not self.video_buffer.is_buffer_ready():
                     self.display.setText("Buffering...")
-                        
-                # High performance mode may try to skip ahead
-                if self.high_performance_mode:
-                    target_frame = min(self.current_frame_idx + 2, last_valid_frame)
-                    self.seek(target_frame, store_frame_idx=True)
-                    self.dropped_frames += 1
             
-            # Improved adaptive frame rate handling - periodically reset to exact frame rate
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            
-            # Calculate a more stable target time
-            if self.adaptive_mode:
-                # Less aggressive adaptation with reset to base timer every 30 frames
-                if self.current_frame_idx % 30 == 0:
-                    # Periodically reset to exact frame rate from video metadata
-                    new_interval = int(1000 / self.frame_rate)
-                    if self.timer.interval() != new_interval:
-                        self.timer.setInterval(new_interval)
-                elif elapsed_ms > self.target_frame_time * 1.5:  # If significantly slower
-                    # Increase interval to avoid dropping frames, but less aggressively
-                    new_interval = min(100, int(self.timer.interval() * 1.1))
-                    if new_interval != self.timer.interval():
-                        self.timer.setInterval(new_interval)
-                elif elapsed_ms < self.target_frame_time * 0.8:  # If significantly faster
-                    # Decrease interval gradually to maintain accuracy
-                    new_interval = max(int(self.target_frame_time * 0.9), int(self.timer.interval() * 0.98))
-                    if new_interval != self.timer.interval():
-                        self.timer.setInterval(new_interval)
-                        
+            # Highly responsive adaptive frame rate handling using high-precision performance counter
+            if self.adaptive_mode and self.last_frame_time is not None:
+                current_time = time.perf_counter()
+                # Get elapsed time in milliseconds with high precision
+                elapsed_ms = (current_time - self.last_frame_time) * 1000
+                self.last_frame_time = current_time
+                
+                # Track frame times for stability analysis
+                self.frame_time_history.append(elapsed_ms)
+                if len(self.frame_time_history) > self.history_size:
+                    self.frame_time_history.pop(0)
+                
+                # Update exponential weighted moving average with higher weight for faster adaptation
+                self.ewma_frame_time = (self.ewma_factor * elapsed_ms) + ((1 - self.ewma_factor) * self.ewma_frame_time)
+                
+                # Calculate error between target and actual frame time
+                error = self.ewma_frame_time - self.target_frame_time
+                
+                # Apply additional offset in high adaptive FPS mode to make corrections more aggressive
+                if self.high_adaptive_fps_mode:
+                    if error > 0:  # Processing is too slow, increase the error to make adjustment more aggressive
+                        error = error + self.adaptive_fps_offset
+                    elif error < 0:  # Processing is too fast, make negative error more negative
+                        error = error - self.adaptive_fps_offset
+                
+                # Determine if the timing is stable
+                is_stable = len(self.frame_time_history) >= 3 and abs(max(self.frame_time_history) - min(self.frame_time_history)) < self.stable_threshold
+                
+                # Calculate adaptive adjustment rate based on error magnitude
+                adjustment_rate = self.base_adjustment_rate
+                if self.adaptive_adjustment:
+                    # Make adjustment more aggressive for larger errors
+                    error_magnitude = abs(error) / self.target_frame_time
+                    if error_magnitude > 0.5:  # Error > 50% of target
+                        adjustment_rate = min(1.5, adjustment_rate * 2)  # Much more aggressive
+                    elif error_magnitude > 0.2:  # Error > 20% of target
+                        adjustment_rate = min(1.2, adjustment_rate * 1.5)  # More aggressive
+                    elif is_stable:
+                        adjustment_rate = adjustment_rate * 0.8  # More conservative when stable
+                
+                # Calculate adjustment based on error with adaptive rate
+                adjustment = error * adjustment_rate
+                
+                # - If processing is slow (positive error), DECREASE interval to compensate
+                # - If processing is fast (negative error), INCREASE interval to maintain target frame rate
+                current_interval = self.timer.interval()
+                new_interval = current_interval - adjustment
+                
+                # Handle extreme cases with immediate correction
+                if new_interval < 1 or new_interval > 1000:
+                    # Reset to target if we're way off
+                    new_interval = self.target_frame_time
+                else:
+                    # Ensure reasonable minimum value
+                    new_interval = max(1.0, new_interval)
+                
+                self.timer.setInterval(int(new_interval))
+        
         except Exception as e:
             print(f"Error in nextFrameSlot: {str(e)}")
     
@@ -654,6 +695,10 @@ class VideoPlayer(QWidget):
             ms_per_frame = 1000 / self.frame_rate  # Don't round to int for more accuracy
             self.target_frame_time = ms_per_frame
             
+            # Reset EWMA frame time and timing variables when starting playback
+            self.ewma_frame_time = ms_per_frame
+            self.frame_time_history = []  # Clear history
+            
             # Wait for buffer to be ready before starting playback
             if not self.buffer_ready and not self.video_buffer.is_buffer_ready():
                 self.display.setText("Buffering...")
@@ -663,6 +708,9 @@ class VideoPlayer(QWidget):
             self.timer.start(int(ms_per_frame))
             self._playing = True
             self.play_button.setIcon(self._invert_icon(QStyle.StandardPixmap.SP_MediaPause))
+            
+            # Initialize the high-precision frame timing with perf_counter
+            self.last_frame_time = time.perf_counter()
         else:
             QMessageBox.warning(None, "Playback Error", "No valid video is loaded")
     
@@ -1115,17 +1163,17 @@ class VideoPlayer(QWidget):
 
     # Remove the update_performance_display method as it's no longer needed
     
-    def toggle_high_performance(self):
-        """Toggle high performance mode"""
-        self.high_performance_mode = not self.high_performance_mode
+    def toggle_high_adaptive_fps(self):
+        """Toggle between normal and high adaptive FPS modes"""
+        self.high_adaptive_fps_mode = not self.high_adaptive_fps_mode
         
         # Update button text
-        self.high_perf_button.setText(f"High Perf: {'On' if self.high_performance_mode else 'Off'}")
+        self.high_perf_button.setText(f"Adaptive: {'High' if self.high_adaptive_fps_mode else 'Normal'}")
         
-        # If turning on high performance mode, adjust buffer size
-        if self.high_performance_mode:
-            # When in high performance mode, we need a larger buffer
-            self.video_buffer.buffer_size = max(60, self.video_buffer.buffer_size)
+        # If turning on high adaptive FPS mode, we might want to increase buffer size
+        if self.high_adaptive_fps_mode:
+            # Higher buffer for more aggressive timing adjustments
+            self.video_buffer.buffer_size = max(40, self.video_buffer.buffer_size)
         else:
             # Reset to default buffer size when returning to normal mode
             self.video_buffer.adjust_buffer_size()

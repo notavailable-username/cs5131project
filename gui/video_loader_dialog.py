@@ -226,7 +226,6 @@ class VideoLoaderDialog(QDialog):
         if (source is self.videos_list and 
             event.type() == event.Type.MouseButtonPress):
             # Get the item at the position of the mouse click
-            print('help')
             item = self.videos_list.itemAt(event.position().toPoint())
             # If clicked on empty space
             if not item:

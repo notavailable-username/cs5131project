@@ -1,11 +1,12 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLabel,
-    QListWidgetItem, QAbstractItemView, QCheckBox
+    QListWidgetItem, QAbstractItemView, QCheckBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QImage, QIcon
 import os
 import cv2
+import shutil
 
 class VideoThumbnailItem(QListWidgetItem):
     def __init__(self, video_path, parent=None):
@@ -114,6 +115,12 @@ class VideoLoaderDialog(QDialog):
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self.load_videos)
         buttons_layout.addWidget(self.refresh_btn)
+        
+        # Clear All button
+        self.clear_all_btn = QPushButton("Clear All Videos")
+        self.clear_all_btn.clicked.connect(self.clear_all_videos)
+        self.clear_all_btn.setStyleSheet("background-color: #8B0000; color: white;")  # Dark red background
+        buttons_layout.addWidget(self.clear_all_btn)
         
         # Spacer
         buttons_layout.addStretch()
@@ -267,3 +274,53 @@ class VideoLoaderDialog(QDialog):
             names = [item.video_name for item in selected_items]
             self.videos_selected.emit(paths, names)
             self.accept()
+    
+    def clear_all_videos(self):
+        """Clear all videos and their associated files after user confirmation"""
+        # Show confirmation dialog
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Deletion",
+            "This will permanently delete ALL videos and their associated annotation and configuration files.\n\n"
+            "Are you sure you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            # Directories to clear
+            dirs_to_clear = [
+                os.path.join("datasets", "videos"),
+                os.path.join("datasets", "annotations", "videos"),
+                os.path.join("datasets", "video_configs")
+            ]
+            
+            success = True
+            errors = []
+            
+            # Clear each directory
+            for directory in dirs_to_clear:
+                if os.path.exists(directory):
+                    try:
+                        # Delete all files but keep the directory structure
+                        for file_name in os.listdir(directory):
+                            file_path = os.path.join(directory, file_name)
+                            if os.path.isfile(file_path):
+                                try:
+                                    os.remove(file_path)
+                                except Exception as e:
+                                    success = False
+                                    errors.append(f"Failed to delete {file_path}: {str(e)}")
+                    except Exception as e:
+                        success = False
+                        errors.append(f"Error accessing directory {directory}: {str(e)}")
+            
+            # Refresh the video list
+            self.load_videos()
+            
+            # Show result message
+            if success:
+                QMessageBox.information(self, "Success", "All videos and associated files have been cleared.")
+            else:
+                error_msg = "Some errors occurred while clearing files:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Warning", error_msg)

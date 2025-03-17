@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         os.makedirs(self.videos_annotations_dir, exist_ok=True)
         
         # Create video_configs directory inside annotations dir instead
-        self.video_configs_dir = os.path.join(self.annotations_dir, "video_configs")
+        self.video_configs_dir = os.path.join(self.datasets_dir, "video_configs")
         os.makedirs(self.video_configs_dir, exist_ok=True)
         
         self.process_thread = None

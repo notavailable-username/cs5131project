@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 class MotionDetector:
     def __init__(self, history=500, varThreshold=16):
-        self.subtractor = cv2.createBackgroundSubtractorMOG2(history=history, varThreshold=varThreshold)
+        self.subtractor = cv2.createBackgroundSubtractorMOG2(history=history, varThreshold=varThreshold, detectShadows=False)
         self.history = history
         self.varThreshold = varThreshold
         logger.debug(f"Initialized MotionDetector with history={history}, varThreshold={varThreshold}")

@@ -1,11 +1,12 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLabel,
-    QListWidgetItem, QAbstractItemView, QCheckBox
+    QListWidgetItem, QAbstractItemView, QCheckBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QImage, QIcon
 import os
 import cv2
+import shutil
 
 class VideoThumbnailItem(QListWidgetItem):
     def __init__(self, video_path, parent=None):
@@ -69,7 +70,7 @@ class VideoThumbnailItem(QListWidgetItem):
             self.setText(self.video_name)
 
 class VideoLoaderDialog(QDialog):
-    video_selected = pyqtSignal(str, str)  # path, display_name (single video)
+    # Removed the video_selected signal
     videos_selected = pyqtSignal(list, list)  # paths, display_names (multiple videos)
     
     def __init__(self, parent=None):
@@ -114,6 +115,12 @@ class VideoLoaderDialog(QDialog):
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self.load_videos)
         buttons_layout.addWidget(self.refresh_btn)
+        
+        # Clear All button
+        self.clear_all_btn = QPushButton("Clear All Videos")
+        self.clear_all_btn.clicked.connect(self.clear_all_videos)
+        self.clear_all_btn.setStyleSheet("background-color: #8B0000; color: white;")  # Dark red background
+        buttons_layout.addWidget(self.clear_all_btn)
         
         # Spacer
         buttons_layout.addStretch()
@@ -219,7 +226,6 @@ class VideoLoaderDialog(QDialog):
         if (source is self.videos_list and 
             event.type() == event.Type.MouseButtonPress):
             # Get the item at the position of the mouse click
-            print('help')
             item = self.videos_list.itemAt(event.position().toPoint())
             # If clicked on empty space
             if not item:
@@ -250,46 +256,70 @@ class VideoLoaderDialog(QDialog):
     
     def on_video_double_clicked(self, item):
         """Handle double-click on video item"""
-        # In single selection mode, just select and load this video
-        if not self.multi_select_checkbox.isChecked():
-            self.emit_single_selected_video(item)
-            self.accept()
-        else:
-            # In multi-selection mode, toggle selection on double click
-            self.on_video_clicked(item)
+        # Treat double-click as selecting a single video
+        self.videos_selected.emit([item.video_path], [item.video_name])
+        self.accept()
     
     def load_selected_video(self):
         """Load the selected video(s)"""
-        selected_items = []
-        for idx in range(self.videos_list.count()):
-            item = self.videos_list.item(idx)
-            if hasattr(item, 'is_selected') and item.is_selected:
-                selected_items.append(item)
+        selected_items = [
+            item for idx in range(self.videos_list.count())
+            if (item := self.videos_list.item(idx)).is_selected
+        ]
         
-        if len(selected_items) == 0:
-            # Show a message that no video is selected
-            return
-        elif len(selected_items) == 1 and not self.multi_select_checkbox.isChecked():
-            # Single video selected in single selection mode
-            self.emit_single_selected_video(selected_items[0])
-        else:
-            # Multiple videos or explicitly using multi-selection mode
-            self.emit_multiple_selected_videos(selected_items)
-            
-        self.accept()
-    
-    def emit_single_selected_video(self, item):
-        """Emit signal with a single selected video"""
-        if isinstance(item, VideoThumbnailItem):
-            self.video_selected.emit(item.video_path, item.video_name)
-    
-    def emit_multiple_selected_videos(self, items):
-        """Emit signal with multiple selected videos"""
-        if items:
-            paths = []
-            names = []
-            for item in items:
-                if isinstance(item, VideoThumbnailItem):
-                    paths.append(item.video_path)
-                    names.append(item.video_name)
+        if selected_items:
+            # Emit all selected videos using the unified signal
+            paths = [item.video_path for item in selected_items]
+            names = [item.video_name for item in selected_items]
             self.videos_selected.emit(paths, names)
+            self.accept()
+    
+    def clear_all_videos(self):
+        """Clear all videos and their associated files after user confirmation"""
+        # Show confirmation dialog
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Deletion",
+            "This will permanently delete ALL videos and their associated annotation and configuration files.\n\n"
+            "Are you sure you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            # Directories to clear
+            dirs_to_clear = [
+                os.path.join("datasets", "videos"),
+                os.path.join("datasets", "annotations", "videos"),
+                os.path.join("datasets", "video_configs")
+            ]
+            
+            success = True
+            errors = []
+            
+            # Clear each directory
+            for directory in dirs_to_clear:
+                if os.path.exists(directory):
+                    try:
+                        # Delete all files but keep the directory structure
+                        for file_name in os.listdir(directory):
+                            file_path = os.path.join(directory, file_name)
+                            if os.path.isfile(file_path):
+                                try:
+                                    os.remove(file_path)
+                                except Exception as e:
+                                    success = False
+                                    errors.append(f"Failed to delete {file_path}: {str(e)}")
+                    except Exception as e:
+                        success = False
+                        errors.append(f"Error accessing directory {directory}: {str(e)}")
+            
+            # Refresh the video list
+            self.load_videos()
+            
+            # Show result message
+            if success:
+                QMessageBox.information(self, "Success", "All videos and associated files have been cleared.")
+            else:
+                error_msg = "Some errors occurred while clearing files:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Warning", error_msg)

@@ -586,7 +586,7 @@ class VideoPlayer(QWidget):
         self.current_frame = frame.copy()
         self.set_image(self.current_frame)
     
-    def set_image_with_annotations(self, frame, annotations=None):
+    def set_image_with_annotations(self, frame, annotations=None, show_labels=True):
         """Set image with optional annotations overlay"""
         if frame is None:
             return
@@ -605,12 +605,13 @@ class VideoPlayer(QWidget):
                     # Draw bounding box
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     
-                    # Draw label and confidence
-                    text = f"{label}"
-                    if confidence > 0:
-                        text += f" ({confidence:.2f})"
-                    cv2.putText(display_frame, text, (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    # Draw label and confidence only if show_labels is True
+                    if show_labels and label != '-' and label != '-1':
+                        text = f"{label}"
+                        if confidence > 0:
+                            text += f" ({confidence:.2f})"
+                        cv2.putText(display_frame, text, (x1, y1-10), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
         # Display the annotated frame
         self.set_image(display_frame)

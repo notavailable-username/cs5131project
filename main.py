@@ -22,6 +22,37 @@ def load_config(config_path="config.yaml"):
         print("Using default configuration.")
         return {}
 
+def ensure_directory_structure():
+    """Ensure the required directory structure exists, creating directories if needed."""
+    base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datasets")
+    
+    # Define the required directory structure
+    required_dirs = [
+        base_dir,
+        os.path.join(base_dir, "annotations"),
+        os.path.join(base_dir, "annotations", "videos"),
+        os.path.join(base_dir, "annotations", "images"),
+        os.path.join(base_dir, "video_configs"),
+        os.path.join(base_dir, "videos"),
+        os.path.join(base_dir, "images"),
+        os.path.join(base_dir, "uncertain")
+    ]
+    
+    # Check and create directories if needed
+    created_dirs = []
+    for directory in required_dirs:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            created_dirs.append(directory)
+    
+    # Print information about created directories
+    if created_dirs:
+        print("Created the following directories:")
+        for directory in created_dirs:
+            print(f"  - {os.path.relpath(directory, os.path.dirname(os.path.abspath(__file__)))}")
+    else:
+        print("All required directories already exist.")
+
 def main():
     parser = argparse.ArgumentParser(description="Integrated Motion-Aware Few-Shot Object Detection System")
     parser.add_argument("--mode", choices=["gui", "cli"], default="gui", help="Launch mode: gui or cli")
@@ -30,6 +61,10 @@ def main():
 
     print(f"Starting application in {args.mode.upper()} mode")
     config = load_config(args.config)
+    
+    # Ensure the directory structure exists
+    print("Checking required directory structure...")
+    ensure_directory_structure()
 
     if args.mode == "gui":
         print("Initializing GUI application...")

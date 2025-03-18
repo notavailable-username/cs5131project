@@ -22,6 +22,9 @@ from models.yolo_trainer import YOLOTrainer
 import json
 import csv
 
+# Add import for FewShotTab
+from .few_shot_tab import FewShotTab
+
 class MotionDetectionThread(QThread):
     """Thread dedicated to pure motion detection without few-shot classification"""
     update_progress = pyqtSignal(int)
@@ -280,6 +283,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._create_few_shot_tab(), "Few-Shot Learning")
         self.tabs.addTab(self._create_annotation_tab(), "Manual Annotation")
         self.tabs.addTab(self._create_training_tab(), "YOLO Training")
+        
+        # Connect tab changed signal
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         
         right_layout.addWidget(self.tabs)
         
@@ -736,9 +742,8 @@ class MainWindow(QMainWindow):
                             self.classes.append(row[1])
                 
                 # Update class selector in the Few-Shot tab
-                if hasattr(self, 'class_selector'):
-                    self.class_selector.clear()
-                    self.class_selector.addItems(self.classes)
+                if hasattr(self, 'few_shot_tab'):
+                    self.few_shot_tab.update_classes(self.classes)
                     
             except Exception as e:
                 print(f"Error loading classes from CSV: {str(e)}")
@@ -846,32 +851,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import Error", f"Failed to import images: {str(e)}")
     
     def _create_few_shot_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
+        """Creates the few-shot learning tab by instantiating the FewShotTab class"""
+        self.few_shot_tab = FewShotTab(self)
         
-        # Support set selection
-        layout.addWidget(QLabel("Select support examples for few-shot learning:"))
+        # Connect signals
+        self.few_shot_tab.request_frame_seek.connect(self.video_player.seek)
+        self.few_shot_tab.annotation_saved.connect(self.on_annotation_saved)
         
-        self.class_selector = QComboBox()
-        layout.addWidget(self.class_selector)
-        
-        btn_add_support = QPushButton("Add Current Frame as Support Example")
-        btn_add_support.clicked.connect(self.add_support_example)
-        layout.addWidget(btn_add_support)
-        
-        # Support examples list
-        layout.addWidget(QLabel("Current support examples:"))
-        self.support_list = QListWidget()
-        layout.addWidget(self.support_list)
-        
-        # Few-shot classification
-        btn_run_few_shot = QPushButton("Run Few-Shot Classification")
-        btn_run_few_shot.clicked.connect(self.run_few_shot_classification)
-        layout.addWidget(btn_run_few_shot)
-        
-        widget.setLayout(layout)
-        return widget
-    
+        # Initialize with current classes if available
+        if hasattr(self, 'classes') and self.classes:
+            self.few_shot_tab.update_classes(self.classes)
+            
+        return self.few_shot_tab
+
+    def on_annotation_saved(self, frame_idx, annotations):
+        """Handle when annotations are saved in the few-shot tab"""
+        # Placeholder for additional logic when annotations are saved
+        pass
+
     def _create_annotation_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
@@ -973,7 +970,12 @@ class MainWindow(QMainWindow):
         if is_running:
             self.video_player.set_video_source_type("Detection Preview")
         else:
-            self.video_player.set_video_source_type("Original Video")
+            # Use the actual filename of the current video
+            if self.current_video_path:
+                current_filename = os.path.basename(self.current_video_path)
+                self.video_player.set_video_source_type(current_filename)
+            else:
+                self.video_player.set_video_source_type("No Video")
     
     def run_motion_detection(self):
         if not self.current_video_path:
@@ -1906,9 +1908,17 @@ class MainWindow(QMainWindow):
                 
             # Update uncertain frames list if we have those for this video
             self.update_uncertain_frames_list()
+            
+            # If we're currently on the few-shot tab, update its contents
+            if self.tabs.currentIndex() == 1 and hasattr(self, 'few_shot_tab'):
+                current_frame_idx = self.video_player.get_current_frame_idx()
+                self.few_shot_tab.load_and_display_annotations(current_frame_idx)
         
         # Update controls state
         self.update_controls_state()
+        
+        if hasattr(self, 'few_shot_tab'):
+            self.few_shot_tab.clear_annotations()
     
     def open_class_editor(self):
         """Open the class editor dialog"""
@@ -1936,6 +1946,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'class_selector'):
                 self.class_selector.clear()
                 self.class_selector.addItems(self.classes)
+                
+        if hasattr(self, 'few_shot_tab'):
+            self.few_shot_tab.update_classes(class_names)
     
     def load_video_motion_settings(self, video_path):
         """Load motion detection settings for a specific video from JSON file"""
@@ -2029,3 +2042,15 @@ class MainWindow(QMainWindow):
             md_settings["frame_interval"] = int(self.frame_interval.text())
         except (ValueError, AttributeError):
             md_settings["frame_interval"] = 2  # Default if invalid
+    
+    def on_tab_changed(self, index):
+        """Handle tab change events"""
+        if index == 1:  # Few-Shot Learning tab index
+            # Update few-shot tab with current classes
+            if hasattr(self, 'few_shot_tab') and self.classes:
+                self.few_shot_tab.update_classes(self.classes)
+                
+                # If we have a current video and current frame, load annotations
+                if self.current_video_path and hasattr(self, 'video_player'):
+                    current_frame_idx = self.video_player.get_current_frame_idx()
+                    self.few_shot_tab.load_and_display_annotations(current_frame_idx)

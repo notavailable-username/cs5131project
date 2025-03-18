@@ -587,7 +587,7 @@ class VideoPlayer(QWidget):
         self.set_image(self.current_frame)
     
     def set_image_with_annotations(self, frame, annotations=None, show_labels=True):
-        """Set image with optional annotations overlay"""
+        """Set image with optional annotations overlay, with support for selection highlighting"""
         if frame is None:
             return
             
@@ -602,8 +602,13 @@ class VideoPlayer(QWidget):
                     label = annotation.get('class', '-1')
                     confidence = annotation.get('confidence', 0.0)
                     
-                    # Draw bounding box
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # Determine color based on selection state
+                    color = (0, 255, 0)  # Default green
+                    if annotation.get('selected', False):
+                        color = (0, 0, 255)  # Selected boxes in red
+                    
+                    # Draw bounding box with selection color
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                     
                     # Draw label and confidence only if show_labels is True
                     if show_labels and label != '-' and label != '-1':
@@ -611,7 +616,7 @@ class VideoPlayer(QWidget):
                         if confidence > 0:
                             text += f" ({confidence:.2f})"
                         cv2.putText(display_frame, text, (x1, y1-10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
         # Display the annotated frame
         self.set_image(display_frame)
@@ -712,6 +717,10 @@ class VideoPlayer(QWidget):
             
             # Initialize the high-precision frame timing with perf_counter
             self.last_frame_time = time.perf_counter()
+            
+            # Update video source type to use the video's filename
+            current_video_name = self.videos[self.current_video_index]["name"]
+            self.set_video_source_type(current_video_name)
         else:
             QMessageBox.warning(None, "Playback Error", "No valid video is loaded")
     

@@ -395,7 +395,5 @@ class VideoBuffer(QObject):
 
     def __del__(self):
         """Clean up resources when object is destroyed"""
-        if hasattr(self, 'update_timer') and self.update_timer.isActive():
-            self.update_timer.stop()
             
         self.stop_buffering()

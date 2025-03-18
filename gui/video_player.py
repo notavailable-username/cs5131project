@@ -1198,9 +1198,6 @@ class VideoPlayer(QWidget):
     
     def __del__(self):
         """Destructor to ensure resources are properly released"""
-        # Stop timers
-        if hasattr(self, 'timer') and self.timer.isActive():
-            self.timer.stop()
             
         # Stop buffer
         if hasattr(self, 'video_buffer'):

@@ -83,12 +83,12 @@ class MotionDetectionThread(QThread):
                         norm_width = box_w / frame_w
                         norm_height = box_h / frame_h
                         
-                        # Record detection in YOLO format with frame_idx
+                        # Record detection in YOLO format with frame_idx, using "-" as class
                         detection = {
                             'frame_idx': frame_count,
                             'bbox_yolo': [center_x, center_y, norm_width, norm_height],
                             'bbox_abs': [x1, y1, x2, y2],  # Keep absolute coords for visualization
-                            'class': 0,  # Default class as 0 (unknown) - changed from -1
+                            'class': '-',  # Use dash as placeholder for class
                             'timestamp': frame_count / fps
                         }
                         all_detections.append(detection)
@@ -732,15 +732,9 @@ class MainWindow(QMainWindow):
                     reader = csv.reader(csvfile)
                     next(reader)  # Skip header row
                     for row in reader:
-                        if len(row) >= 2:
-                            class_name = row[1]
-                            if class_name != "unknown" and class_name != "":
-                                self.classes.append(class_name)
+                        if len(row) >= 2 and row[1].strip() != "":
+                            self.classes.append(row[1])
                 
-                # Initialize with just "unknown" if empty
-                if len(self.classes) == 0:
-                    self.classes = ["unknown"]
-                    
                 # Update class selector in the Few-Shot tab
                 if hasattr(self, 'class_selector'):
                     self.class_selector.clear()
@@ -748,25 +742,15 @@ class MainWindow(QMainWindow):
                     
             except Exception as e:
                 print(f"Error loading classes from CSV: {str(e)}")
-                self.classes = ["unknown"]
         else:
-            # Just unknown if no CSV exists
-            self.classes = ["unknown"]
+            # If no CSV exists, just have empty classes
+            pass
             
-            # Create a default classes.csv file with just unknown
-            os.makedirs(os.path.dirname(classes_csv_path), exist_ok=True)
-            try:
-                with open(classes_csv_path, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(['class_id', 'class_name'])
-                    writer.writerow([0, "unknown"])
-            except Exception as e:
-                print(f"Error creating default classes CSV: {str(e)}")
-        
         # Update UI with loaded classes
         if hasattr(self, 'class_selector'):
             self.class_selector.clear()
-            self.class_selector.addItems(self.classes)
+            if self.classes:
+                self.class_selector.addItems(self.classes)
     
     def import_videos_directory(self):
         """Import all videos from a directory to datasets/videos"""
@@ -1174,16 +1158,15 @@ class MainWindow(QMainWindow):
         
         for box in boxes:
             x1, y1, x2, y2 = box
-            # Create annotation dict for visualization
+            # Create annotation dict for visualization - no class or confidence
             annotation = {
-                'bbox_abs': [x1, y1, x2, y2],
-                'class': -1,
-                'confidence': 0.0
+                'bbox_abs': [x1, y1, x2, y2]
+                # No class or confidence information
             }
             frame_annotations.append(annotation)
         
-        # Use the video player to display the frame with annotations
-        self.video_player.set_image_with_annotations(frame, frame_annotations)
+        # Use the video player to display the frame with annotations, but don't show labels
+        self.video_player.set_image_with_annotations(frame, frame_annotations, show_labels=False)
     
     def handle_motion_detection_complete(self, all_detections):
         """Handle the completion of motion detection without few-shot classification"""
@@ -1250,22 +1233,18 @@ class MainWindow(QMainWindow):
                 for det in frame_detections:
                     # Use the YOLO bbox format (center_x center_y width height)
                     bbox = det['bbox_yolo']
-                    class_id = det['class']
-                    # Format: class_id center_x center_y width height
-                    f.write(f"{class_id} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n")
+                    # Use dash as placeholder for class
+                    f.write(f"- {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n")
         
-        # Save a classes.csv file with initialized classes
+        # Create the classes.csv file only if it doesn't exist
         classes_csv_path = os.path.join(annotations_dir, "classes.csv")
         if not os.path.exists(classes_csv_path):
             with open(classes_csv_path, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(['class_id', 'class_name'])
-                writer.writerow([0, 'unknown'])  # Default class is unknown/0 (changed from -1)
-                
-                # Add any other classes that might have been loaded
+                # Only write actual defined classes, no default classes
                 for i, class_name in enumerate(self.classes):
-                    if class_name != "unknown":
-                        writer.writerow([i+1, class_name])
+                    writer.writerow([i, class_name])
 
     def clean_detection_files(self):
         """Remove all files created during the detection process"""

@@ -196,10 +196,8 @@ class ClassEditorDialog(QDialog):
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(classes_csv_path), exist_ok=True)
             
-            # Just initialize with unknown class
-            classes = [
-                {"id": 0, "name": "unknown"}
-            ]
+            # Initialize with empty classes list
+            classes = []
         else:
             try:
                 with open(classes_csv_path, 'r', newline='') as csvfile:
@@ -213,10 +211,8 @@ class ClassEditorDialog(QDialog):
                             })
             except Exception as e:
                 print(f"Error loading classes from CSV: {str(e)}")
-                # Initialize with unknown class on error
-                classes = [
-                    {"id": 0, "name": "unknown"}
-                ]
+                # Initialize with empty classes list on error
+                classes = []
         
         # Store classes for this video
         self.video_classes[self.current_video_path] = classes
@@ -253,7 +249,7 @@ class ClassEditorDialog(QDialog):
             return
             
         if self.current_video_path not in self.video_classes:
-            self.video_classes[self.current_video_path] = [{"id": 0, "name": "unknown"}]
+            self.video_classes[self.current_video_path] = []
             
         classes = self.video_classes[self.current_video_path]
         

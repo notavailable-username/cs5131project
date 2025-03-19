@@ -80,6 +80,11 @@ class RelationNetworkModel:
             class_embeddings = []
             for img in examples:
                 # Convert and preprocess image
+                if isinstance(img, torch.Tensor):
+                    # Convert torch.Tensor to numpy array and scale to 0-255 if needed
+                    img = img.permute(1, 2, 0).cpu().numpy()  # Convert (C, H, W) to (H, W, C)
+                    img = (img * 255).astype(np.uint8)  # Ensure it's in [0, 255] for OpenCV
+                
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img_tensor = self.transform(img_rgb).unsqueeze(0).to(self.device)
                 

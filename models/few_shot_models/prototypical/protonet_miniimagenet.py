@@ -1,14 +1,15 @@
+import os
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.utils.data
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
 from tqdm import tqdm
-import os
 import math
 
 # Set random seeds for reproducibility
@@ -20,56 +21,40 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-# MiniImageNet class definition (needed since it was imported but not defined)
-class MiniImageNet(torch.utils.data.Dataset):
-    """
-    MiniImageNet dataset for few-shot learning
-    """
+class MiniImageNet(Dataset):
     def __init__(self, root, split='train', transform=None):
-        super(MiniImageNet, self).__init__()
         self.root = root
         self.split = split
         self.transform = transform
-        
-        # Define the path to the split file
-        split_file = os.path.join(root, f"{split}.csv")
-        
-        # Load the data
-        self.data = []
-        self.targets = []
-        
-        # Read the CSV file
-        import pandas as pd
-        df = pd.read_csv(split_file)
-        
-        # Map unique labels to indices
-        self.classes = sorted(df['label'].unique())
-        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
-        
-        # Load images and labels
-        for _, row in df.iterrows():
-            img_path = os.path.join(root, 'images', row['filename'])
-            if os.path.exists(img_path):
-                self.data.append(img_path)
-                self.targets.append(self.class_to_idx[row['label']])
-    
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        img_path = self.data[idx]
-        target = self.targets[idx]
-        
-        # Load the image
-        from PIL import Image
-        img = Image.open(img_path).convert('RGB')
-        
-        if self.transform:
-            img = self.transform(img)
-        
-        return img, target
 
-# Define the neural network model
+        # Load CSV file
+        csv_path = os.path.join(root, f"{split}.csv")
+        self.data = pd.read_csv(csv_path)
+
+        # Extract image names and labels
+        self.image_paths = self.data['filename'].tolist()
+        self.labels = self.data['label'].tolist()
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.root, self.image_paths[idx])
+        image = Image.open(img_path).convert("RGB")
+        label = self.labels[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+# Define image transformations (normalize & resize for CNNs)
+transform = transforms.Compose([
+    transforms.Resize((84, 84)),  # Resize to Mini-ImageNet size
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
 def conv_block(in_channels, out_channels):
     '''
     returns a block conv-bn-relu-pool
@@ -80,7 +65,6 @@ def conv_block(in_channels, out_channels):
         nn.ReLU(),
         nn.MaxPool2d(2)
     )
-
 
 class ProtoNet(nn.Module):
     '''
@@ -106,7 +90,7 @@ def show_images(dataset, num_samples=6):
     
     for i in range(num_samples):
         image, label = dataset[i]  # Get image and label
-        image = image.permute(1, 2, 0)  # Convert from Tensor to NumPy
+        image = image.permute(1, 2, 0)  # Convert from Tensor shape
         
         # Undo normalization to view original image
         mean = torch.tensor([0.485, 0.456, 0.406])
@@ -119,6 +103,21 @@ def show_images(dataset, num_samples=6):
         axes[i].axis("off")
     
     plt.show()
+
+# Define inverse transform to convert tensors back to images
+def inverse_transform(tensor):
+    """Convert normalized tensor to image for visualization"""
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    
+    # Un-normalize
+    tensor = tensor * std + mean
+    
+    # Clip values to [0, 1]
+    tensor = torch.clamp(tensor, 0, 1)
+    
+    # Convert to numpy array and transpose to (H, W, C)
+    return tensor.cpu().numpy().transpose(1, 2, 0)
 
 # Define prototypical loss function
 def prototypical_loss(prototypes, query_samples, query_labels):
@@ -203,7 +202,7 @@ def create_episode(dataset, class_map, n_way, n_support, n_query):
     return support_samples, support_labels, query_samples, query_labels
 
 # Training function
-def train_epoch(model, train_dataset, train_class_map, n_episodes, n_way, n_support, n_query, optimizer, device):
+def train_epoch(model, train_dataset, train_class_map, n_episodes, optimizer, n_way, n_support, n_query, device):
     model.train()
     total_loss = 0
     total_acc = 0
@@ -283,7 +282,8 @@ def validate(model, val_dataset, val_class_map, n_episodes, n_way, n_support, n_
     return total_loss / n_episodes, total_acc / n_episodes
 
 # Main training loop
-def train_model(model, train_dataset, val_dataset, n_epochs, n_episodes, n_way, n_support, n_query, optimizer, lr_scheduler, device):
+def train_model(model, train_dataset, val_dataset, n_epochs, n_episodes, optimizer, lr_scheduler, 
+                n_way, n_support, n_query, device, model_save_path='best_protonet_model.pth'):
     best_val_acc = 0
     train_losses = []
     train_accs = []
@@ -298,12 +298,18 @@ def train_model(model, train_dataset, val_dataset, n_epochs, n_episodes, n_way, 
         print(f"Epoch {epoch+1}/{n_epochs}")
         
         # Train
-        train_loss, train_acc = train_epoch(model, train_dataset, train_class_map, n_episodes, n_way, n_support, n_query, optimizer, device)
+        train_loss, train_acc = train_epoch(
+            model, train_dataset, train_class_map, n_episodes, 
+            optimizer, n_way, n_support, n_query, device
+        )
         train_losses.append(train_loss)
         train_accs.append(train_acc)
         
         # Validate
-        val_loss, val_acc = validate(model, val_dataset, val_class_map, n_episodes//2, n_way, n_support, n_query, device)
+        val_loss, val_acc = validate(
+            model, val_dataset, val_class_map, n_episodes//2, 
+            n_way, n_support, n_query, device
+        )
         val_losses.append(val_loss)
         val_accs.append(val_acc)
         
@@ -321,15 +327,15 @@ def train_model(model, train_dataset, val_dataset, n_epochs, n_episodes, n_way, 
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
-            }, 'best_protonet_model.pth')
+            }, model_save_path)
             print(f"Model saved with validation accuracy: {val_acc:.4f}")
     
     return train_losses, train_accs, val_losses, val_accs
 
 # Test function
-def test_model(model, test_dataset, n_episodes, n_way, n_support, n_query, device):
+def test_model(model, test_dataset, n_episodes, n_way, n_support, n_query, device, model_path='best_protonet_model.pth'):
     # Load best model
-    checkpoint = torch.load('best_protonet_model.pth', map_location=device)
+    checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
     
@@ -372,37 +378,12 @@ def test_model(model, test_dataset, n_episodes, n_way, n_support, n_query, devic
     print(f"Test Accuracy: {test_acc:.4f}")
     return test_acc
 
-# Define inverse transform to convert tensors back to images
-def inverse_transform(tensor):
-    """Convert normalized tensor to image for visualization"""
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    
-    # Un-normalize
-    tensor = tensor * std + mean
-    
-    # Clip values to [0, 1]
-    tensor = torch.clamp(tensor, 0, 1)
-    
-    # Convert to numpy array and transpose to (H, W, C)
-    return tensor.cpu().numpy().transpose(1, 2, 0)
-
-# Load the saved model
-def load_model(device):
-    model = ProtoNet(x_dim=3, hid_dim=64, z_dim=64)
-    checkpoint = torch.load('best_protonet_model.pth', map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    model.eval()
-    print(f"Loaded model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
-    return model
-
-# Function to create an episode and visualize it
+# Function to visualize an episode
 def visualize_episode(model, test_dataset, n_way=5, n_support=5, n_query=5, device=None):
     """Create an episode, visualize support and query sets, and show model predictions"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+        
     # Create class mapping for test set
     test_class_map = {}
     for idx, (_, label) in enumerate(test_dataset):
@@ -565,7 +546,7 @@ def visualize_episode(model, test_dataset, n_way=5, n_support=5, n_query=5, devi
         confusion[query_labels[i]][predictions[i]] += 1
     
     print("\nConfusion Matrix:")
-    print("True\\Pred", end="")
+    print("True\Pred", end="")
     for i in range(n_way):
         print(f"  {i}  ", end="")
     print()
@@ -585,13 +566,26 @@ def visualize_episode(model, test_dataset, n_way=5, n_support=5, n_query=5, devi
         'original_classes': original_classes
     }
 
-# Main function to run the visual test
-def run_visual_test(test_dataset, device):
-    model = load_model(device)
+# Load the saved model
+def load_model(model_path='best_protonet_model.pth', device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model = ProtoNet(x_dim=3, hid_dim=64, z_dim=64)
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+    print(f"Loaded model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
+    return model
+
+def run_visual_test(model, test_dataset, device=None, num_episodes=3):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     results = []
     # Create multiple episodes to visualize
-    for episode in range(3):
+    for episode in range(num_episodes):
         print(f"\nVisualizing Episode {episode+1}")
         episode_results = visualize_episode(model, test_dataset, device=device)
         results.append(episode_results)
@@ -602,98 +596,81 @@ def run_visual_test(test_dataset, device):
     
     return results
 
+def plot_training_metrics(train_losses, train_accs, val_losses, val_accs, save_path='protonet_training_metrics.png'):
+    plt.figure(figsize=(12, 5))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses, label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and Validation Loss')
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accs, label='Train Acc')
+    plt.plot(val_accs, label='Val Acc')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.title('Training and Validation Accuracy')
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.show()
+
 def main():
     # Set random seed for reproducibility
     set_seed(42)
     
-    # Define transforms
-    transform = transforms.Compose([
-        transforms.Resize((84, 84)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    # Set dataset path - adjust this to your local path
-    dataset_path = "path/to/miniimagenet"
-    
-    # Initialize device
+    # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Create datasets
-    try:
-        print("Loading datasets...")
-        train_dataset = MiniImageNet(root=dataset_path, split="train", transform=transform)
-        val_dataset = MiniImageNet(root=dataset_path, split="val", transform=transform)
-        test_dataset = MiniImageNet(root=dataset_path, split="test", transform=transform)
-        
-        # Create DataLoaders
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
-        
-        print(f"Train dataset: {len(train_dataset)} samples")
-        print(f"Val dataset: {len(val_dataset)} samples")
-        print(f"Test dataset: {len(test_dataset)} samples")
-        
-        # Show some sample images
-        print("Displaying sample images...")
-        show_images(train_dataset)
-        
-        # Define the episodic training parameters
-        n_way = 5  # Number of classes per episode
-        n_support = 5  # Number of support samples per class (K-shot)
-        n_query = 15  # Number of query samples per class
-        n_episodes = 100  # Number of episodes per epoch
-        
-        # Initialize model
-        model = ProtoNet(x_dim=3, hid_dim=64, z_dim=64)  # 3 channels for RGB images
-        model = model.to(device)
-        
-        # Define optimizer
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-        
-        # Train model
-        print("Starting model training...")
-        n_epochs = 50
-        train_losses, train_accs, val_losses, val_accs = train_model(
-            model, train_dataset, val_dataset, n_epochs, n_episodes, 
-            n_way, n_support, n_query, optimizer, lr_scheduler, device
-        )
-        
-        # Test the model
-        test_acc = test_model(model, test_dataset, n_episodes, n_way, n_support, n_query, device)
-        
-        # Plot training and validation metrics
-        plt.figure(figsize=(12, 5))
-        
-        plt.subplot(1, 2, 1)
-        plt.plot(train_losses, label='Train Loss')
-        plt.plot(val_losses, label='Val Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.title('Training and Validation Loss')
-        
-        plt.subplot(1, 2, 2)
-        plt.plot(train_accs, label='Train Acc')
-        plt.plot(val_accs, label='Val Acc')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
-        plt.legend()
-        plt.title('Training and Validation Accuracy')
-        
-        plt.tight_layout()
-        plt.savefig('protonet_training_metrics.png')
-        plt.show()
-        
-        # Run visual test
-        print("\nRunning visual test...")
-        run_visual_test(test_dataset, device)
-        
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # Set dataset path - modify this to your dataset path
+    dataset_path = "/path/to/miniImageNet/dataset"
+    
+    # Create train, validation, and test datasets
+    train_dataset = MiniImageNet(root=dataset_path, split="train", transform=transform)
+    val_dataset = MiniImageNet(root=dataset_path, split="val", transform=transform)
+    test_dataset = MiniImageNet(root=dataset_path, split="test", transform=transform)
+    
+    # Show some sample images if desired
+    # show_images(train_dataset)
+    
+    # Initialize the model
+    model = ProtoNet(x_dim=3, hid_dim=64, z_dim=64)  # 3 channels for RGB images
+    model = model.to(device)
+    
+    # Define the episodic training parameters
+    n_way = 5  # Number of classes per episode
+    n_support = 5  # Number of support samples per class (K-shot)
+    n_query = 15  # Number of query samples per class
+    n_episodes = 100  # Number of episodes per epoch
+    n_epochs = 50  # Number of epochs
+    
+    # Define optimizer and learning rate scheduler
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    
+    # Train the model
+    print("Starting training...")
+    train_losses, train_accs, val_losses, val_accs = train_model(
+        model, train_dataset, val_dataset, n_epochs, n_episodes, 
+        optimizer, lr_scheduler, n_way, n_support, n_query, device
+    )
+    
+    # Plot training metrics
+    plot_training_metrics(train_losses, train_accs, val_losses, val_accs)
+    
+    # Test the model
+    test_acc = test_model(model, test_dataset, n_episodes, n_way, n_support, n_query, device)
+    
+    # Visualize model predictions
+    model = load_model(device=device)
+    results = run_visual_test(model, test_dataset, device)
+    
+    return results
 
 if __name__ == "__main__":
     main()

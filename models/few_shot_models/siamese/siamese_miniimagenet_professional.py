@@ -140,9 +140,11 @@ def conv_block(in_channels, out_channels):
         nn.MaxPool2d(2)
     )
 
-class ProtoNet(nn.Module):
+
+# Replace the ProtoNet class with this SiameseNet class
+class SiameseNet(nn.Module):
     """
-    Implementation of Prototypical Networks for Few-Shot Learning.
+    Implementation of Siamese Networks for Few-Shot Learning.
     
     Args:
         x_dim (int): Number of input channels
@@ -150,130 +152,130 @@ class ProtoNet(nn.Module):
         z_dim (int): Number of output channels in the final embedding
     """
     def __init__(self, x_dim=3, hid_dim=64, z_dim=64):
-        super(ProtoNet, self).__init__()
+        super(SiameseNet, self).__init__()
         self.encoder = nn.Sequential(
             conv_block(x_dim, hid_dim),
             conv_block(hid_dim, hid_dim),
             conv_block(hid_dim, hid_dim),
             conv_block(hid_dim, z_dim),
         )
-
-    def forward(self, x):
+        
+    def forward_one(self, x):
         x = self.encoder(x)
         return x.view(x.size(0), -1)
+        
+    def forward(self, x1, x2=None):
+        if x2 is None:
+            return self.forward_one(x1)
+        
+        # Get embeddings of both images
+        output1 = self.forward_one(x1)
+        output2 = self.forward_one(x2)
+        
+        return output1, output2
 
-def create_episode(dataset, n_way, n_support, n_query):
+# Replace prototypical_loss with contrastive_loss function
+def contrastive_loss(output1, output2, label, margin=1.0):
     """
-    Create an episode for few-shot learning.
+    Calculate the contrastive loss for Siamese networks.
     
     Args:
-        dataset (MiniImageNet): The dataset to sample from
-        n_way (int): Number of classes in each episode
-        n_support (int): Number of support samples per class
-        n_query (int): Number of query samples per class
-        
-    Returns:
-        tuple: (support_samples, support_labels, query_samples, query_labels)
-    """
-    # Randomly select n_way classes
-    classes = random.sample(list(dataset.class_map.keys()), n_way)
-    
-    support_samples = []
-    support_labels = []
-    query_samples = []
-    query_labels = []
-    
-    for i, cls in enumerate(classes):
-        # Get indices of samples for this class
-        cls_indices = dataset.class_map[cls]
-        
-        # Randomly select n_support + n_query samples
-        selected_indices = random.sample(cls_indices, n_support + n_query)
-        
-        # Split into support and query sets
-        support_indices = selected_indices[:n_support]
-        query_indices = selected_indices[n_support:]
-        
-        # Add samples to support and query sets
-        for idx in support_indices:
-            img, _ = dataset[idx]
-            support_samples.append(img)
-            support_labels.append(i)  # Use index as the label
-        
-        for idx in query_indices:
-            img, _ = dataset[idx]
-            query_samples.append(img)
-            query_labels.append(i)  # Use index as the label
-    
-    # Convert to tensors
-    support_samples = torch.stack(support_samples)
-    support_labels = torch.tensor(support_labels)
-    query_samples = torch.stack(query_samples)
-    query_labels = torch.tensor(query_labels)
-    
-    return support_samples, support_labels, query_samples, query_labels
-
-class EpisodicBatchSampler:
-    """
-    Samples batches in the form of episodes.
-    
-    Args:
-        dataset (Dataset): Dataset from which to sample
-        n_episodes (int): Number of episodes to generate
-    """
-    def __init__(self, dataset, n_episodes):
-        self.n_episodes = n_episodes
-        self.dataset = dataset
-        
-    def __len__(self):
-        return self.n_episodes
-    
-    def __iter__(self):
-        for _ in range(self.n_episodes):
-            yield torch.arange(len(self.dataset))
-
-def prototypical_loss(prototypes, query_samples, query_labels):
-    """
-    Calculate the prototypical loss as the negative log probability of the correct class.
-    
-    Args:
-        prototypes: Tensor of shape (n_way, embedding_dim) - the prototype of each class
-        query_samples: Tensor of shape (n_queries, embedding_dim) - the embedded query samples
-        query_labels: Tensor of shape (n_queries) - the labels of the query samples
+        output1: Tensor of shape (batch_size, embedding_dim) - the embedding of the first input
+        output2: Tensor of shape (batch_size, embedding_dim) - the embedding of the second input
+        label: Tensor of shape (batch_size) - 1 if same class, 0 if different class
+        margin: Margin for the contrastive loss
         
     Returns:
         tuple: (loss, accuracy)
     """
-    # Calculate distances between query samples and prototypes
-    dists = torch.cdist(query_samples, prototypes)**2  # Squared Euclidean distance
+    # Calculate Euclidean distance
+    euclidean_distance = torch.nn.functional.pairwise_distance(output1, output2)
     
-    # Calculate negative log probability of the correct class
-    log_p_y = torch.nn.functional.log_softmax(-dists, dim=1)
+    # Contrastive loss
+    loss = torch.mean((1-label) * torch.pow(euclidean_distance, 2) + 
+                      (label) * torch.pow(torch.clamp(margin - euclidean_distance, min=0.0), 2))
     
-    # Get the target indices
-    target_inds = query_labels
-    
-    # Calculate the loss
-    loss = -log_p_y.gather(1, target_inds.unsqueeze(1)).mean()
-    
-    # Calculate accuracy
-    _, y_hat = log_p_y.max(1)
-    acc = torch.eq(y_hat, target_inds).float().mean()
+    # Calculate accuracy (predict same class if distance < 0.5)
+    pred = euclidean_distance < 0.5
+    acc = torch.mean((pred == label).float())
     
     return loss, acc
 
-def train_epoch(model, dataset, n_episodes, optimizer, n_way, n_support, n_query, device):
+# Create a function to generate pairs for Siamese training
+def create_siamese_batch(dataset, batch_size):
     """
-    Train the model for one epoch.
+    Create a batch of pairs for Siamese network training.
     
     Args:
-        model: The model to train
+        dataset (MiniImageNet): The dataset to sample from
+        batch_size (int): Number of pairs to create
+        
+    Returns:
+        tuple: (img1, img2, labels) where labels[i]=1 if same class, 0 if different
+    """
+    # All available classes
+    classes = list(dataset.class_map.keys())
+    
+    # Create batch
+    img1 = []
+    img2 = []
+    labels = []
+    
+    for _ in range(batch_size):
+        # With 50% probability, create a genuine pair
+        if random.random() > 0.5:
+            # Select a random class
+            cls = random.choice(classes)
+            
+            # Get two random images from this class
+            cls_indices = dataset.class_map[cls]
+            if len(cls_indices) < 2:
+                # If class has only one image, just duplicate it
+                idx = random.choice(cls_indices)
+                img1_idx, img2_idx = idx, idx
+            else:
+                img1_idx, img2_idx = random.sample(cls_indices, 2)
+            
+            img1_sample, _ = dataset[img1_idx]
+            img2_sample, _ = dataset[img2_idx]
+            
+            img1.append(img1_sample)
+            img2.append(img2_sample)
+            labels.append(1)  # Same class
+        
+        else:
+            # Select two different classes
+            cls1, cls2 = random.sample(classes, 2)
+            
+            # Get one random image from each class
+            img1_idx = random.choice(dataset.class_map[cls1])
+            img2_idx = random.choice(dataset.class_map[cls2])
+            
+            img1_sample, _ = dataset[img1_idx]
+            img2_sample, _ = dataset[img2_idx]
+            
+            img1.append(img1_sample)
+            img2.append(img2_sample)
+            labels.append(0)  # Different classes
+    
+    # Convert to tensors
+    img1 = torch.stack(img1)
+    img2 = torch.stack(img2)
+    labels = torch.tensor(labels, dtype=torch.float)
+    
+    return img1, img2, labels
+
+# Replace train_epoch function
+def train_epoch(model, dataset, n_episodes, optimizer, batch_size, device):
+    """
+    Train the model for one epoch using Siamese network approach.
+    
+    Args:
+        model: The Siamese model to train
         dataset: The dataset to sample episodes from
         n_episodes: Number of episodes in this epoch
         optimizer: The optimizer
-        n_way: Number of classes per episode
-        n_support: Number of support samples per class
-        n_query: Number of query samples per class
+        batch_size: Batch size for training
         device: Device to use for computation
         
     Returns:
@@ -284,32 +286,22 @@ def train_epoch(model, dataset, n_episodes, optimizer, n_way, n_support, n_query
     total_acc = 0
     
     for episode in tqdm(range(n_episodes), desc="Training"):
-        # Create episode
-        support_samples, support_labels, query_samples, query_labels = create_episode(
-            dataset, n_way, n_support, n_query
-        )
+        # Create batch of pairs
+        img1, img2, labels = create_siamese_batch(dataset, batch_size)
         
         # Move to device
-        support_samples = support_samples.to(device)
-        support_labels = support_labels.to(device)
-        query_samples = query_samples.to(device)
-        query_labels = query_labels.to(device)
+        img1 = img1.to(device)
+        img2 = img2.to(device)
+        labels = labels.to(device)
         
         # Reset gradients
         optimizer.zero_grad()
         
-        # Compute embeddings
-        support_embeddings = model(support_samples)
-        query_embeddings = model(query_samples)
-        
-        # Compute prototypes
-        prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-        for i in range(n_way):
-            mask = support_labels == i
-            prototypes[i] = support_embeddings[mask].mean(0)
+        # Forward pass
+        output1, output2 = model(img1, img2)
         
         # Compute loss and accuracy
-        loss, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
+        loss, acc = contrastive_loss(output1, output2, labels)
         
         # Backward pass
         loss.backward()
@@ -320,17 +312,16 @@ def train_epoch(model, dataset, n_episodes, optimizer, n_way, n_support, n_query
     
     return total_loss / n_episodes, total_acc / n_episodes
 
-def validate(model, dataset, n_episodes, n_way, n_support, n_query, device):
+# Replace validate function
+def validate(model, dataset, n_episodes, batch_size, device):
     """
-    Validate the model.
+    Validate the model using Siamese network approach.
     
     Args:
-        model: The model to validate
+        model: The Siamese model to validate
         dataset: The dataset to sample episodes from
         n_episodes: Number of episodes for validation
-        n_way: Number of classes per episode
-        n_support: Number of support samples per class
-        n_query: Number of query samples per class
+        batch_size: Batch size for validation
         device: Device to use for computation
         
     Returns:
@@ -342,46 +333,35 @@ def validate(model, dataset, n_episodes, n_way, n_support, n_query, device):
     
     with torch.no_grad():
         for episode in tqdm(range(n_episodes), desc="Validating"):
-            # Create episode
-            support_samples, support_labels, query_samples, query_labels = create_episode(
-                dataset, n_way, n_support, n_query
-            )
+            # Create batch of pairs
+            img1, img2, labels = create_siamese_batch(dataset, batch_size)
             
             # Move to device
-            support_samples = support_samples.to(device)
-            support_labels = support_labels.to(device)
-            query_samples = query_samples.to(device)
-            query_labels = query_labels.to(device)
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            labels = labels.to(device)
             
-            # Compute embeddings
-            support_embeddings = model(support_samples)
-            query_embeddings = model(query_samples)
-            
-            # Compute prototypes
-            prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-            for i in range(n_way):
-                mask = support_labels == i
-                prototypes[i] = support_embeddings[mask].mean(0)
+            # Forward pass
+            output1, output2 = model(img1, img2)
             
             # Compute loss and accuracy
-            loss, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
+            loss, acc = contrastive_loss(output1, output2, labels)
             
             total_loss += loss.item()
             total_acc += acc.item()
     
     return total_loss / n_episodes, total_acc / n_episodes
 
-def test(model, dataset, n_episodes, n_way, n_support, n_query, device):
+# Replace test function
+def test(model, dataset, n_episodes, batch_size, device):
     """
-    Test the model.
+    Test the model using Siamese network approach.
     
     Args:
-        model: The model to test
+        model: The Siamese model to test
         dataset: The dataset to sample episodes from
         n_episodes: Number of episodes for testing
-        n_way: Number of classes per episode
-        n_support: Number of support samples per class
-        n_query: Number of query samples per class
+        batch_size: Batch size for testing
         device: Device to use for computation
         
     Returns:
@@ -392,37 +372,96 @@ def test(model, dataset, n_episodes, n_way, n_support, n_query, device):
     
     with torch.no_grad():
         for episode in tqdm(range(n_episodes), desc="Testing"):
-            # Create episode
-            support_samples, support_labels, query_samples, query_labels = create_episode(
-                dataset, n_way, n_support, n_query
-            )
+            # Create batch of pairs
+            img1, img2, labels = create_siamese_batch(dataset, batch_size)
             
             # Move to device
-            support_samples = support_samples.to(device)
-            support_labels = support_labels.to(device)
-            query_samples = query_samples.to(device)
-            query_labels = query_labels.to(device)
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            labels = labels.to(device)
             
-            # Compute embeddings
-            support_embeddings = model(support_samples)
-            query_embeddings = model(query_samples)
-            
-            # Compute prototypes
-            prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-            for i in range(n_way):
-                mask = support_labels == i
-                prototypes[i] = support_embeddings[mask].mean(0)
+            # Forward pass
+            output1, output2 = model(img1, img2)
             
             # Compute accuracy
-            _, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
+            _, acc = contrastive_loss(output1, output2, labels)
             
             total_acc += acc.item()
     
     return total_acc / n_episodes
 
+# Modify the parse_args function to add Siamese-specific arguments
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Siamese Networks for Few-Shot Learning')
+    
+    # Dataset parameters
+    parser.add_argument('--dataset_path', type=str, default='/Users/jadentjeng/Downloads/archive-4', 
+                        help='Path to the Mini-ImageNet dataset')
+    
+    # Model parameters
+    parser.add_argument('--x_dim', type=int, default=3, 
+                        help='Number of input channels')
+    parser.add_argument('--hid_dim', type=int, default=64, 
+                        help='Hidden dimension in convolutional layers')
+    parser.add_argument('--z_dim', type=int, default=64, 
+                        help='Output dimension of the embedding')
+    
+    # Training parameters
+    parser.add_argument('--batch_size', type=int, default=128, 
+                        help='Batch size for Siamese network training')
+    parser.add_argument('--margin', type=float, default=1.0, 
+                        help='Margin for contrastive loss')
+    parser.add_argument('--n_episodes', type=int, default=100, 
+                        help='Number of episodes per epoch during training')
+    parser.add_argument('--n_val_episodes', type=int, default=50, 
+                        help='Number of episodes per validation')
+    parser.add_argument('--n_test_episodes', type=int, default=100, 
+                        help='Number of episodes for testing')
+    parser.add_argument('--n_epochs', type=int, default=50, 
+                        help='Number of training epochs')
+    
+    # Optimizer parameters
+    parser.add_argument('--learning_rate', type=float, default=0.001, 
+                        help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=0.0, 
+                        help='Weight decay (L2 regularization)')
+    parser.add_argument('--lr_scheduler', type=str, default='step', choices=['step', 'cosine', 'none'],
+                        help='Learning rate scheduler type')
+    parser.add_argument('--lr_step_size', type=int, default=20, 
+                        help='Step size for StepLR scheduler')
+    parser.add_argument('--lr_gamma', type=float, default=0.5, 
+                        help='Gamma for StepLR scheduler')
+    
+    # Parallel training parameters
+    parser.add_argument('--use_distributed', action='store_true',
+                        help='Use DistributedDataParallel instead of DataParallel')
+    
+    # Misc
+    parser.add_argument('--seed', type=int, default=42, 
+                        help='Random seed')
+    parser.add_argument('--output_dir', type=str, default='./output', 
+                        help='Directory to save outputs')
+    parser.add_argument('--model_name', type=str, default='best_siamese_model.pth', 
+                        help='Name of the model file')
+    parser.add_argument('--test_only', action='store_true',
+                        help='Only perform testing, no training')
+    
+    args = parser.parse_args()
+    return args
+
+# Modify main() to initialize SiameseNet instead of ProtoNet
+# Change this part in the main() function:
+"""
+# Initialize the model
+model = SiameseNet(x_dim=args.x_dim, hid_dim=args.hid_dim, z_dim=args.z_dim)
+model = model.to(device)
+"""
+
+# Modify the train_model function to use the new arguments for Siamese network
 def train_model(model, train_dataset, val_dataset, args, device):
     """
-    Train the model for multiple epochs.
+    Train the Siamese network model for multiple epochs.
     
     Args:
         model: The model to train
@@ -461,7 +500,7 @@ def train_model(model, train_dataset, val_dataset, args, device):
         # Train
         train_loss, train_acc = train_epoch(
             model, train_dataset, args.n_episodes, 
-            optimizer, args.n_way, args.n_support, args.n_query, device
+            optimizer, args.batch_size, device
         )
         train_losses.append(train_loss)
         train_accs.append(train_acc)
@@ -469,7 +508,7 @@ def train_model(model, train_dataset, val_dataset, args, device):
         # Validate
         val_loss, val_acc = validate(
             model, val_dataset, args.n_val_episodes, 
-            args.n_way, args.n_support, args.n_query, device
+            args.batch_size, device
         )
         val_losses.append(val_loss)
         val_accs.append(val_acc)
@@ -502,6 +541,8 @@ def train_model(model, train_dataset, val_dataset, args, device):
                          save_path=os.path.join(args.output_dir, 'training_metrics.png'))
     
     return train_losses, train_accs, val_losses, val_accs
+
+
 
 def plot_training_metrics(train_losses, train_accs, val_losses, val_accs, save_path):
     """
@@ -536,69 +577,8 @@ def plot_training_metrics(train_losses, train_accs, val_losses, val_accs, save_p
     plt.savefig(save_path)
     logger.info(f"Training metrics saved to {save_path}")
 
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Prototypical Networks for Few-Shot Learning')
-    
-    # Dataset parameters
-    parser.add_argument('--dataset_path', type=str, default='/Users/jadentjeng/Downloads/archive-4', 
-                        help='Path to the Mini-ImageNet dataset')
-    
-    # Model parameters
-    parser.add_argument('--x_dim', type=int, default=3, 
-                        help='Number of input channels')
-    parser.add_argument('--hid_dim', type=int, default=64, 
-                        help='Hidden dimension in convolutional layers')
-    parser.add_argument('--z_dim', type=int, default=64, 
-                        help='Output dimension of the embedding')
-    
-    # Training parameters
-    parser.add_argument('--n_way', type=int, default=5, 
-                        help='Number of classes per episode')
-    parser.add_argument('--n_support', type=int, default=5, 
-                        help='Number of support examples per class (K-shot)')
-    parser.add_argument('--n_query', type=int, default=15, 
-                        help='Number of query examples per class')
-    parser.add_argument('--n_episodes', type=int, default=100, 
-                        help='Number of episodes per epoch during training')
-    parser.add_argument('--n_val_episodes', type=int, default=50, 
-                        help='Number of episodes per validation')
-    parser.add_argument('--n_test_episodes', type=int, default=100, 
-                        help='Number of episodes for testing')
-    parser.add_argument('--n_epochs', type=int, default=50, 
-                        help='Number of training epochs')
-    
-    # Optimizer parameters
-    parser.add_argument('--learning_rate', type=float, default=0.001, 
-                        help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=0.0, 
-                        help='Weight decay (L2 regularization)')
-    parser.add_argument('--lr_scheduler', type=str, default='step', choices=['step', 'cosine', 'none'],
-                        help='Learning rate scheduler type')
-    parser.add_argument('--lr_step_size', type=int, default=20, 
-                        help='Step size for StepLR scheduler')
-    parser.add_argument('--lr_gamma', type=float, default=0.5, 
-                        help='Gamma for StepLR scheduler')
-    
-    # Parallel training parameters
-    parser.add_argument('--use_distributed', action='store_true',
-                        help='Use DistributedDataParallel instead of DataParallel')
-    
-    # Misc
-    parser.add_argument('--seed', type=int, default=42, 
-                        help='Random seed')
-    parser.add_argument('--output_dir', type=str, default='./output', 
-                        help='Directory to save outputs')
-    parser.add_argument('--model_name', type=str, default='best_protonet_model.pth', 
-                        help='Name of the model file')
-    parser.add_argument('--test_only', action='store_true',
-                        help='Only perform testing, no training')
-    
-    args = parser.parse_args()
-    return args
-
 def main():
-    """Main function."""
+    """Main function for Siamese Network training and evaluation."""
     # Parse arguments
     args = parse_args()
     
@@ -621,8 +601,8 @@ def main():
     val_dataset = MiniImageNet(root=args.dataset_path, split="val", transform=transform)
     test_dataset = MiniImageNet(root=args.dataset_path, split="test", transform=transform)
     
-    # Initialize the model
-    model = ProtoNet(x_dim=args.x_dim, hid_dim=args.hid_dim, z_dim=args.z_dim)
+    # Initialize the Siamese model
+    model = SiameseNet(x_dim=args.x_dim, hid_dim=args.hid_dim, z_dim=args.z_dim)
     model = model.to(device)
     
     # Setup model for parallel processing if multiple GPUs are available
@@ -643,24 +623,23 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         logger.info(f"Loaded model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
     else:
-        # Train the model
+        # Train the Siamese model
         train_losses, train_accs, val_losses, val_accs = train_model(
             model, train_dataset, val_dataset, args, device
         )
     
-    # Test the model
+    # Test the Siamese model
     logger.info("Starting testing...")
-    test_acc = test(model, test_dataset, args.n_test_episodes, 
-                 args.n_way, args.n_support, args.n_query, device)
+    test_acc = test(model, test_dataset, args.n_test_episodes, args.batch_size, device)
     
     logger.info(f"Test Accuracy: {test_acc:.4f}")
     
     # Save test results
     with open(os.path.join(args.output_dir, 'test_results.txt'), 'w') as f:
         f.write(f"Test Accuracy: {test_acc:.4f}\n")
-        f.write(f"N-way: {args.n_way}\n")
-        f.write(f"K-shot: {args.n_support}\n")
-        f.write(f"N-query: {args.n_query}\n")
+        f.write(f"Model: Siamese Network\n")
+        f.write(f"Batch Size: {args.batch_size}\n")
+        f.write(f"Margin: {args.margin}\n")
         f.write(f"N-episodes: {args.n_test_episodes}\n")
     
     logger.info(f"Test results saved to {os.path.join(args.output_dir, 'test_results.txt')}")

@@ -3,11 +3,11 @@ import cv2
 import torch
 import os
 import logging
-from models.few_shot_models.siamese import SiameseModel
+""" from models.few_shot_models.siamese import SiameseModel
 from models.few_shot_models.prototypical import PrototypicalModel
 from models.few_shot_models.matching import MatchingModel
 from models.few_shot_models.maml import MAMLModel
-from models.few_shot_models.relation_network import RelationNetworkModel
+from models.few_shot_models.relation_network import RelationNetworkModel """
 from utils.ensemble import ensemble_vote
 from utils.data_augmentation import augment_image
 
@@ -18,7 +18,7 @@ class FewShotEnsemble:
     def __init__(self, confidence_threshold=0.5):
         self.confidence_threshold = confidence_threshold
         # Instantiate five different few-shot models.
-        try:
+        """ try:
             self.models = [
                 SiameseModel(),
                 PrototypicalModel(),
@@ -29,7 +29,7 @@ class FewShotEnsemble:
             logger.info("Successfully initialized all few-shot models")
         except Exception as e:
             logger.error(f"Error initializing few-shot models: {e}")
-            self.models = []
+            self.models = [] """
             
         self.support_examples = {}  # {class_name: [image_patches]}
         self.augmentation_config = {
@@ -68,7 +68,7 @@ class FewShotEnsemble:
             logger.warning("No support examples available for training")
             return False
             
-        try:
+        """ try:
             for model in self.models:
                 model.train(self.support_examples)
             logger.info("Successfully trained all models")
@@ -76,14 +76,14 @@ class FewShotEnsemble:
         except Exception as e:
             logger.error(f"Error during model training: {e}")
             return False
-    
+     """
     def predict(self, image_patch):
         """Make predictions using all trained models and ensemble the results"""
         if not self.models:
             logger.error("No models available for prediction")
             return "unknown", 0.0
             
-        try:
+        """ try:
             # Get predictions from each model
             predictions = []
             confidences = []
@@ -105,7 +105,7 @@ class FewShotEnsemble:
             
         except Exception as e:
             logger.error(f"Error during prediction: {e}")
-            return "unknown", 0.0
+            return "unknown", 0.0 """
 
 if __name__ == "__main__":
     import sys

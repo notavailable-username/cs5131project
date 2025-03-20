@@ -786,7 +786,10 @@ def main():
     set_seed(args.seed)
     
     # Set device
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using CUDA")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
         print("Using MPS device")
     else:

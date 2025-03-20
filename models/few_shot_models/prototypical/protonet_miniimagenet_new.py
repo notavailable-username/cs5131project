@@ -1,19 +1,24 @@
 import os
+import json
+from functools import partial
+from tqdm import tqdm
 import argparse
-import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+import torchvision
 import numpy as np
+from torch.autograd import Variable
 import random
 import matplotlib.pyplot as plt
-from PIL import Image
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as transforms
-from tqdm import tqdm
-import time
 import logging
 from pathlib import Path
+from PIL import Image
+import pandas as pd
+import torchvision.transforms as transforms
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -72,7 +77,137 @@ def setup_model_for_parallel(model, use_distributed=False):
         # Simple DataParallel for single-process multi-GPU
         return nn.DataParallel(model)
 
-class MiniImageNet(Dataset):
+
+def euclidean_dist(x, y):
+    # x: N x D
+    # y: M x D
+    n = x.size(0)
+    m = y.size(0)
+    d = x.size(1)
+    assert d == y.size(1)
+
+    x = x.unsqueeze(1).expand(n, m, d)
+    y = y.unsqueeze(0).expand(n, m, d)
+
+    return torch.pow(x - y, 2).sum(2)
+
+class Flatten(nn.Module):
+    def __init__(self):
+        super(Flatten, self).__init__()
+    
+    def forward(self, x):
+        return x.view(x.size(0), -1)
+
+
+class Protonet(nn.Module):
+    def __init__(self, x_dim=3, hid_dim=64, z_dim=64):
+        """
+        Initialize Prototypical Network with the specified dimensions.
+        
+        Args:
+            x_dim (int): Number of input channels
+            hid_dim (int): Hidden dimension in convolutional layers
+            z_dim (int): Output dimension of the embedding
+        """
+        super(Protonet, self).__init__()
+        
+        # Create the encoder network
+        def conv_block(in_channels, out_channels):
+            return nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(),
+                nn.MaxPool2d(2)
+            )
+        
+        self.encoder = nn.Sequential(
+            conv_block(x_dim, hid_dim),
+            conv_block(hid_dim, hid_dim),
+            conv_block(hid_dim, hid_dim),
+            conv_block(hid_dim, z_dim),
+            Flatten()
+        )
+
+    def forward(self, xs, xq):
+        n_class = xs.size(0)
+        n_support = xs.size(1)
+        n_query = xq.size(1)
+        
+        # Reshape to feed through encoder
+        x = torch.cat([
+            xs.view(n_class * n_support, *xs.size()[2:]),
+            xq.view(n_class * n_query, *xq.size()[2:])
+        ], 0)
+        
+        # Get embeddings
+        z = self.encoder(x)
+        z_dim = z.size(-1)
+        
+        # Separate support and query embeddings
+        z_support = z[:n_class * n_support].view(n_class, n_support, z_dim)
+        z_query = z[n_class * n_support:]
+        
+        # Calculate prototypes (mean of support examples for each class)
+        prototypes = z_support.mean(1)
+        
+        # Calculate distance from each query to each prototype
+        dists = euclidean_dist(z_query, prototypes)
+        
+        return dists, prototypes
+    
+    def loss(self, sample):
+        xs = Variable(sample['xs']) # support
+        xq = Variable(sample['xq']) # query
+
+        n_class = xs.size(0)
+        assert xq.size(0) == n_class
+        n_support = xs.size(1)
+        n_query = xq.size(1)
+
+        target_inds = torch.arange(0, n_class).view(n_class, 1, 1).expand(n_class, n_query, 1).long()
+        target_inds = Variable(target_inds, requires_grad=False)
+
+        if xq.is_cuda:
+            target_inds = target_inds.cuda()
+        elif xq.device.type == 'mps':
+            # Move target_inds to MPS and ensure it's properly allocated
+            target_inds = target_inds.to('mps')
+
+        x = torch.cat([xs.view(n_class * n_support, *xs.size()[2:]),
+                       xq.view(n_class * n_query, *xq.size()[2:])], 0)
+
+        z = self.encoder.forward(x)
+        z_dim = z.size(-1)
+
+        z_proto = z[:n_class*n_support].view(n_class, n_support, z_dim).mean(1)
+        zq = z[n_class*n_support:]
+
+        dists = euclidean_dist(zq, z_proto)
+
+        log_p_y = F.log_softmax(-dists, dim=1).view(n_class, n_query, -1)
+
+        # If using MPS, move calculation to CPU temporarily to avoid MPS gather issues
+        if log_p_y.device.type == 'mps':
+            cpu_log_p_y = log_p_y.cpu()
+            cpu_target_inds = target_inds.cpu()
+            gathered = cpu_log_p_y.gather(2, cpu_target_inds)
+            loss_val = -gathered.squeeze().view(-1).mean().to(log_p_y.device)
+
+            # For accuracy calculation
+            _, y_hat = cpu_log_p_y.max(2)
+            acc_val = torch.eq(y_hat, cpu_target_inds.squeeze()).float().mean().to(log_p_y.device)
+        else:
+            loss_val = -log_p_y.gather(2, target_inds).squeeze().view(-1).mean()
+            _, y_hat = log_p_y.max(2)
+            acc_val = torch.eq(y_hat, target_inds.squeeze()).float().mean()
+
+        return loss_val, {
+            'loss': loss_val.item(),
+            'acc': acc_val.item()
+        }
+
+
+class MiniImageNet(torch.utils.data.Dataset):
     """
     Mini-ImageNet dataset for few-shot learning.
     
@@ -121,67 +256,24 @@ class MiniImageNet(Dataset):
 
         return image, label
 
-def conv_block(in_channels, out_channels):
-    """
-    Returns a block of convolutional layer followed by batch normalization,
-    ReLU activation, and max pooling.
-    
-    Args:
-        in_channels (int): Number of input channels
-        out_channels (int): Number of output channels
-        
-    Returns:
-        nn.Sequential: The convolutional block
-    """
-    return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, 3, padding=1),
-        nn.BatchNorm2d(out_channels),
-        nn.ReLU(),
-        nn.MaxPool2d(2)
-    )
-
-class ProtoNet(nn.Module):
-    """
-    Implementation of Prototypical Networks for Few-Shot Learning.
-    
-    Args:
-        x_dim (int): Number of input channels
-        hid_dim (int): Number of hidden channels in convolutional layers
-        z_dim (int): Number of output channels in the final embedding
-    """
-    def __init__(self, x_dim=3, hid_dim=64, z_dim=64):
-        super(ProtoNet, self).__init__()
-        self.encoder = nn.Sequential(
-            conv_block(x_dim, hid_dim),
-            conv_block(hid_dim, hid_dim),
-            conv_block(hid_dim, hid_dim),
-            conv_block(hid_dim, z_dim),
-        )
-
-    def forward(self, x):
-        x = self.encoder(x)
-        return x.view(x.size(0), -1)
-
 def create_episode(dataset, n_way, n_support, n_query):
     """
     Create an episode for few-shot learning.
     
     Args:
-        dataset (MiniImageNet): The dataset to sample from
+        dataset: The dataset to sample from
         n_way (int): Number of classes in each episode
         n_support (int): Number of support samples per class
         n_query (int): Number of query samples per class
         
     Returns:
-        tuple: (support_samples, support_labels, query_samples, query_labels)
+        dict: 'xs' - support samples, 'xq' - query samples
     """
     # Randomly select n_way classes
     classes = random.sample(list(dataset.class_map.keys()), n_way)
     
     support_samples = []
-    support_labels = []
     query_samples = []
-    query_labels = []
     
     for i, cls in enumerate(classes):
         # Get indices of samples for this class
@@ -195,72 +287,26 @@ def create_episode(dataset, n_way, n_support, n_query):
         query_indices = selected_indices[n_support:]
         
         # Add samples to support and query sets
+        cls_support = []
         for idx in support_indices:
             img, _ = dataset[idx]
-            support_samples.append(img)
-            support_labels.append(i)  # Use index as the label
+            cls_support.append(img)
+        support_samples.append(torch.stack(cls_support))
         
+        cls_query = []
         for idx in query_indices:
             img, _ = dataset[idx]
-            query_samples.append(img)
-            query_labels.append(i)  # Use index as the label
+            cls_query.append(img)
+        query_samples.append(torch.stack(cls_query))
     
     # Convert to tensors
-    support_samples = torch.stack(support_samples)
-    support_labels = torch.tensor(support_labels)
-    query_samples = torch.stack(query_samples)
-    query_labels = torch.tensor(query_labels)
+    xs = torch.stack(support_samples)  # [n_way, n_support, c, h, w]
+    xq = torch.stack(query_samples)    # [n_way, n_query, c, h, w]
     
-    return support_samples, support_labels, query_samples, query_labels
-
-class EpisodicBatchSampler:
-    """
-    Samples batches in the form of episodes.
-    
-    Args:
-        dataset (Dataset): Dataset from which to sample
-        n_episodes (int): Number of episodes to generate
-    """
-    def __init__(self, dataset, n_episodes):
-        self.n_episodes = n_episodes
-        self.dataset = dataset
-        
-    def __len__(self):
-        return self.n_episodes
-    
-    def __iter__(self):
-        for _ in range(self.n_episodes):
-            yield torch.arange(len(self.dataset))
-
-def prototypical_loss(prototypes, query_samples, query_labels):
-    """
-    Calculate the prototypical loss as the negative log probability of the correct class.
-    
-    Args:
-        prototypes: Tensor of shape (n_way, embedding_dim) - the prototype of each class
-        query_samples: Tensor of shape (n_queries, embedding_dim) - the embedded query samples
-        query_labels: Tensor of shape (n_queries) - the labels of the query samples
-        
-    Returns:
-        tuple: (loss, accuracy)
-    """
-    # Calculate distances between query samples and prototypes
-    dists = torch.cdist(query_samples, prototypes)**2  # Squared Euclidean distance
-    
-    # Calculate negative log probability of the correct class
-    log_p_y = torch.nn.functional.log_softmax(-dists, dim=1)
-    
-    # Get the target indices
-    target_inds = query_labels
-    
-    # Calculate the loss
-    loss = -log_p_y.gather(1, target_inds.unsqueeze(1)).mean()
-    
-    # Calculate accuracy
-    _, y_hat = log_p_y.max(1)
-    acc = torch.eq(y_hat, target_inds).float().mean()
-    
-    return loss, acc
+    return {
+        'xs': xs,
+        'xq': xq
+    }
 
 def train_epoch(model, dataset, n_episodes, optimizer, n_way, n_support, n_query, device):
     """
@@ -285,38 +331,24 @@ def train_epoch(model, dataset, n_episodes, optimizer, n_way, n_support, n_query
     
     for episode in tqdm(range(n_episodes), desc="Training"):
         # Create episode
-        support_samples, support_labels, query_samples, query_labels = create_episode(
-            dataset, n_way, n_support, n_query
-        )
+        sample = create_episode(dataset, n_way, n_support, n_query)
         
         # Move to device
-        support_samples = support_samples.to(device)
-        support_labels = support_labels.to(device)
-        query_samples = query_samples.to(device)
-        query_labels = query_labels.to(device)
+        sample['xs'] = sample['xs'].to(device)
+        sample['xq'] = sample['xq'].to(device)
         
         # Reset gradients
         optimizer.zero_grad()
         
-        # Compute embeddings
-        support_embeddings = model(support_samples)
-        query_embeddings = model(query_samples)
-        
-        # Compute prototypes
-        prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-        for i in range(n_way):
-            mask = support_labels == i
-            prototypes[i] = support_embeddings[mask].mean(0)
-        
-        # Compute loss and accuracy
-        loss, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
+        # Forward pass and calculate loss
+        loss, metrics = model.loss(sample)
         
         # Backward pass
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item()
-        total_acc += acc.item()
+        total_loss += metrics['loss']
+        total_acc += metrics['acc']
     
     return total_loss / n_episodes, total_acc / n_episodes
 
@@ -343,31 +375,17 @@ def validate(model, dataset, n_episodes, n_way, n_support, n_query, device):
     with torch.no_grad():
         for episode in tqdm(range(n_episodes), desc="Validating"):
             # Create episode
-            support_samples, support_labels, query_samples, query_labels = create_episode(
-                dataset, n_way, n_support, n_query
-            )
+            sample = create_episode(dataset, n_way, n_support, n_query)
             
             # Move to device
-            support_samples = support_samples.to(device)
-            support_labels = support_labels.to(device)
-            query_samples = query_samples.to(device)
-            query_labels = query_labels.to(device)
+            sample['xs'] = sample['xs'].to(device)
+            sample['xq'] = sample['xq'].to(device)
             
-            # Compute embeddings
-            support_embeddings = model(support_samples)
-            query_embeddings = model(query_samples)
+            # Forward pass and calculate loss
+            loss, metrics = model.loss(sample)
             
-            # Compute prototypes
-            prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-            for i in range(n_way):
-                mask = support_labels == i
-                prototypes[i] = support_embeddings[mask].mean(0)
-            
-            # Compute loss and accuracy
-            loss, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
-            
-            total_loss += loss.item()
-            total_acc += acc.item()
+            total_loss += metrics['loss']
+            total_acc += metrics['acc']
     
     return total_loss / n_episodes, total_acc / n_episodes
 
@@ -393,115 +411,18 @@ def test(model, dataset, n_episodes, n_way, n_support, n_query, device):
     with torch.no_grad():
         for episode in tqdm(range(n_episodes), desc="Testing"):
             # Create episode
-            support_samples, support_labels, query_samples, query_labels = create_episode(
-                dataset, n_way, n_support, n_query
-            )
+            sample = create_episode(dataset, n_way, n_support, n_query)
             
             # Move to device
-            support_samples = support_samples.to(device)
-            support_labels = support_labels.to(device)
-            query_samples = query_samples.to(device)
-            query_labels = query_labels.to(device)
+            sample['xs'] = sample['xs'].to(device)
+            sample['xq'] = sample['xq'].to(device)
             
-            # Compute embeddings
-            support_embeddings = model(support_samples)
-            query_embeddings = model(query_samples)
+            # Forward pass and calculate loss
+            _, metrics = model.loss(sample)
             
-            # Compute prototypes
-            prototypes = torch.zeros(n_way, support_embeddings.shape[1]).to(device)
-            for i in range(n_way):
-                mask = support_labels == i
-                prototypes[i] = support_embeddings[mask].mean(0)
-            
-            # Compute accuracy
-            _, acc = prototypical_loss(prototypes, query_embeddings, query_labels)
-            
-            total_acc += acc.item()
+            total_acc += metrics['acc']
     
     return total_acc / n_episodes
-
-def train_model(model, train_dataset, val_dataset, args, device):
-    """
-    Train the model for multiple epochs.
-    
-    Args:
-        model: The model to train
-        train_dataset: The training dataset
-        val_dataset: The validation dataset
-        args: Command-line arguments with hyperparameters
-        device: Device to use for computation
-        
-    Returns:
-        tuple: (train_losses, train_accuracies, val_losses, val_accuracies)
-    """
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-    model_save_path = os.path.join(args.output_dir, args.model_name)
-    
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    
-    if args.lr_scheduler == 'step':
-        lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
-    elif args.lr_scheduler == 'cosine':
-        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_epochs)
-    else:
-        lr_scheduler = None
-    
-    best_val_acc = 0
-    train_losses = []
-    train_accs = []
-    val_losses = []
-    val_accs = []
-    
-    logger.info("Starting training...")
-    
-    for epoch in range(args.n_epochs):
-        start_time = time.time()
-        
-        # Train
-        train_loss, train_acc = train_epoch(
-            model, train_dataset, args.n_episodes, 
-            optimizer, args.n_way, args.n_support, args.n_query, device
-        )
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
-        
-        # Validate
-        val_loss, val_acc = validate(
-            model, val_dataset, args.n_val_episodes, 
-            args.n_way, args.n_support, args.n_query, device
-        )
-        val_losses.append(val_loss)
-        val_accs.append(val_acc)
-        
-        # Update learning rate if scheduler is defined
-        if lr_scheduler is not None:
-            lr_scheduler.step()
-        
-        epoch_time = time.time() - start_time
-        
-        # Print metrics
-        logger.info(f"Epoch {epoch+1}/{args.n_epochs} - Time: {epoch_time:.2f}s - "
-                   f"Train Loss: {train_loss:.4f} - Train Acc: {train_acc:.4f} - "
-                   f"Val Loss: {val_loss:.4f} - Val Acc: {val_acc:.4f}")
-        
-        # Save model if it's the best so far
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_acc': val_acc,
-                'hyperparameters': vars(args),
-            }, model_save_path)
-            logger.info(f"Model saved with validation accuracy: {val_acc:.4f}")
-    
-    # Plot and save training metrics
-    plot_training_metrics(train_losses, train_accs, val_losses, val_accs, 
-                         save_path=os.path.join(args.output_dir, 'training_metrics.png'))
-    
-    return train_losses, train_accs, val_losses, val_accs
 
 def plot_training_metrics(train_losses, train_accs, val_losses, val_accs, save_path):
     """
@@ -536,6 +457,61 @@ def plot_training_metrics(train_losses, train_accs, val_losses, val_accs, save_p
     plt.savefig(save_path)
     logger.info(f"Training metrics saved to {save_path}")
 
+class Engine(object):
+    def __init__(self):
+        hook_names = ['on_start', 'on_start_epoch', 'on_sample', 'on_forward',
+                      'on_backward', 'on_end_epoch', 'on_update', 'on_end']
+
+        self.hooks = { }
+        for hook_name in hook_names:
+            self.hooks[hook_name] = lambda state: None
+
+    def train(self, **kwargs):
+        state = {
+            'model': kwargs['model'],
+            'loader': kwargs['loader'],
+            'optim_method': kwargs['optim_method'],
+            'optim_config': kwargs['optim_config'],
+            'max_epoch': kwargs['max_epoch'],
+            'epoch': 0, # epochs done so far
+            't': 0, # samples seen so far
+            'batch': 0, # samples seen in current epoch
+            'stop': False
+        }
+
+        state['optimizer'] = state['optim_method'](state['model'].parameters(), **state['optim_config'])
+
+        self.hooks['on_start'](state)
+        while state['epoch'] < state['max_epoch'] and not state['stop']:
+            state['model'].train()
+
+            self.hooks['on_start_epoch'](state)
+
+            state['epoch_size'] = len(state['loader'])
+
+            for sample in tqdm(state['loader'], desc="Epoch {:d} train".format(state['epoch'] + 1)):
+                state['sample'] = sample
+                self.hooks['on_sample'](state)
+
+                state['optimizer'].zero_grad()
+                loss, state['output'] = state['model'].loss(state['sample'])
+                self.hooks['on_forward'](state)
+
+                loss.backward()
+                self.hooks['on_backward'](state)
+
+                state['optimizer'].step()
+
+                state['t'] += 1
+                state['batch'] += 1
+                self.hooks['on_update'](state)
+
+            state['epoch'] += 1
+            state['batch'] = 0
+            self.hooks['on_end_epoch'](state)
+
+        self.hooks['on_end'](state)
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Prototypical Networks for Few-Shot Learning')
@@ -551,6 +527,10 @@ def parse_args():
                         help='Hidden dimension in convolutional layers')
     parser.add_argument('--z_dim', type=int, default=64, 
                         help='Output dimension of the embedding')
+    parser.add_argument('--use_fce', action='store_true',
+                        help='Use Full Context Embeddings (FCE) with LSTM')
+    parser.add_argument('--num_processing_steps', type=int, default=4,
+                      help='Number of processing steps for FCE in Matching Networks')
     
     # Training parameters
     parser.add_argument('--n_way', type=int, default=5, 
@@ -597,6 +577,113 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+def train_model(model, train_dataset, val_dataset, args, device):
+    """
+    Train the model for multiple epochs.
+    
+    Args:
+        model: The model to train
+        train_dataset: The training dataset
+        val_dataset: The validation dataset
+        args: Command-line arguments with hyperparameters
+        device: Device to use for computation
+        
+    Returns:
+        tuple: (train_losses, train_accs, val_losses, val_accuracies, best_model_path)
+    """
+    # Initialize optimizer
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    
+    # Initialize learning rate scheduler
+    if args.lr_scheduler == 'step':
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    elif args.lr_scheduler == 'cosine':
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_epochs)
+    else:
+        scheduler = None
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    best_val_acc = 0.0
+    wait = 0
+    train_losses = []
+    train_accs = []
+    val_losses = []
+    val_accs = []
+    
+    logger.info("Starting training...")
+    
+    for epoch in range(args.n_epochs):
+        start_time = time.time()
+        
+        # Train
+        train_loss, train_acc = train_epoch(
+            model=model,
+            dataset=train_dataset,
+            n_episodes=args.n_episodes,
+            optimizer=optimizer,
+            n_way=args.n_way,
+            n_support=args.n_support,
+            n_query=args.n_query,
+            device=device
+        )
+        
+        # Validate
+        val_loss, val_acc = validate(
+            model=model,
+            dataset=val_dataset,
+            n_episodes=args.n_val_episodes,
+            n_way=args.n_way,
+            n_support=args.n_support,
+            n_query=args.n_query,
+            device=device
+        )
+        
+        # Update learning rate
+        if scheduler is not None:
+            scheduler.step()
+        
+        # Record metrics
+        train_losses.append(train_loss)
+        train_accs.append(train_acc)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
+        
+        epoch_time = time.time() - start_time
+        
+        # Print progress
+        logger.info(f"Epoch {epoch+1}/{args.n_epochs} - Time: {epoch_time:.2f}s - "
+                   f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
+                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+        
+        # Check for improvement
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            logger.info(f"New best validation accuracy: {best_val_acc:.4f}")
+            
+            # Save the best model
+            model_path = os.path.join(args.output_dir, args.model_name)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_acc': val_acc,
+                'hyperparameters': vars(args),
+            }, model_path)
+            logger.info(f"Model saved to {model_path}")
+            
+            wait = 0
+        else:
+            wait += 1
+            logger.info(f"Validation accuracy did not improve. Wait: {wait}")
+    
+    # Plot training metrics
+    metrics_path = os.path.join(args.output_dir, 'training_metrics.png')
+    plot_training_metrics(train_losses, train_accs, val_losses, val_accs, metrics_path)
+    
+    return train_losses, train_accs, val_losses, val_accs, os.path.join(args.output_dir, args.model_name)
+
 def main():
     """Main function."""
     # Parse arguments
@@ -608,14 +695,13 @@ def main():
     # Set device
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print("Using CUDA")
+        logger.info("Using CUDA")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("Using MPS device")
+        logger.info("Using MPS device")
     else:
         device = torch.device("cpu")
-        print("MPS device not found, using CPU")
-    logger.info(f"Using device: {device}")
+        logger.info("Using CPU")
     
     # Define image transformations
     transform = transforms.Compose([
@@ -630,7 +716,7 @@ def main():
     test_dataset = MiniImageNet(root=args.dataset_path, split="test", transform=transform)
     
     # Initialize the model
-    model = ProtoNet(x_dim=args.x_dim, hid_dim=args.hid_dim, z_dim=args.z_dim)
+    model = Protonet(x_dim=args.x_dim, hid_dim=args.hid_dim, z_dim=args.z_dim)
     model = model.to(device)
     
     # Setup model for parallel processing if multiple GPUs are available
@@ -652,14 +738,26 @@ def main():
         logger.info(f"Loaded model from epoch {checkpoint['epoch']} with validation accuracy {checkpoint['val_acc']:.4f}")
     else:
         # Train the model
-        train_losses, train_accs, val_losses, val_accs = train_model(
+        _, _, _, _, best_model_path = train_model(
             model, train_dataset, val_dataset, args, device
         )
+        
+        # Load best model for testing
+        logger.info("Loading best model for testing...")
+        checkpoint = torch.load(best_model_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
     
-    # Test the model
+    # Test
     logger.info("Starting testing...")
-    test_acc = test(model, test_dataset, args.n_test_episodes, 
-                 args.n_way, args.n_support, args.n_query, device)
+    test_acc = test(
+        model=model,
+        dataset=test_dataset,
+        n_episodes=args.n_test_episodes,
+        n_way=args.n_way,
+        n_support=args.n_support,
+        n_query=args.n_query,
+        device=device
+    )
     
     logger.info(f"Test Accuracy: {test_acc:.4f}")
     
@@ -671,7 +769,11 @@ def main():
         f.write(f"N-query: {args.n_query}\n")
         f.write(f"N-episodes: {args.n_test_episodes}\n")
     
-    logger.info(f"Test results saved to {os.path.join(args.output_dir, 'test_results.txt')}")
+    logger.info("Training completed!")
+
+if __name__ == "__main__":
+    main()
+
 
 if __name__ == "__main__":
     main()

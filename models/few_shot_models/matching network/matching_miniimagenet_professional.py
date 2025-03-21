@@ -56,7 +56,7 @@ def setup_model_for_parallel(model, use_distributed=False):
     """
     num_gpus = get_available_gpus()
     
-    if num_gpus <= 1:
+    if (num_gpus <= 1):
         return model  # No parallelization needed
         
     logger.info(f"Using {num_gpus} GPUs for training")
@@ -112,7 +112,7 @@ class MiniImageNet(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.root, self.image_paths[idx])
+        img_path = os.path.join(self.root, "images", self.image_paths[idx])
         image = Image.open(img_path).convert("RGB")
         label = self.labels[idx]
 
@@ -125,13 +125,6 @@ def conv_block(in_channels, out_channels):
     """
     Returns a block of convolutional layer followed by batch normalization,
     ReLU activation, and max pooling.
-    
-    Args:
-        in_channels (int): Number of input channels
-        out_channels (int): Number of output channels
-        
-    Returns:
-        nn.Sequential: The convolutional block
     """
     return nn.Sequential(
         nn.Conv2d(in_channels, out_channels, 3, padding=1),
@@ -140,224 +133,201 @@ def conv_block(in_channels, out_channels):
         nn.MaxPool2d(2)
     )
 
-class AttentionLSTMCell(nn.Module):
+class DistanceNetwork(nn.Module):
     """
-    LSTM cell used for the Full Context Embeddings (FCE)
+    Computes the cosine similarity between query and support samples.
     """
-    def __init__(self, input_size, hidden_size):
-        super(AttentionLSTMCell, self).__init__()
+    def __init__(self):
+        super(DistanceNetwork, self).__init__()
+
+    def forward(self, support, queries):
+        """
+        Calculate the cosine distance between support and query samples
+        
+        Args:
+            support: support samples [n_way * n_support, embedding_dim]
+            queries: query samples [n_queries, embedding_dim]
+            
+        Returns:
+            similarities: cosine similarities [n_queries, n_way * n_support]
+        """
+        # Normalize embeddings
+        support_norm = support / torch.norm(support, dim=1, keepdim=True)
+        queries_norm = queries / torch.norm(queries, dim=1, keepdim=True)
+        
+        # Calculate cosine similarity
+        similarities = torch.mm(queries_norm, support_norm.transpose(0, 1))
+        return similarities
+
+class AttentionLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1):
+        super(AttentionLSTM, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
         
-        # LSTM weights
-        self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
+        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, 
+                           num_layers=num_layers, batch_first=True)
         
-    def forward(self, x, h_prev, c_prev, read):
-        """
-        Forward pass through the LSTM cell
-        x: input tensor
-        h_prev: previous hidden state
-        c_prev: previous cell state
-        read: read vector from attention
-        """
-        combined = torch.cat([x, read], dim=1)
-        h, c = self.lstm(combined, (h_prev, c_prev))
-        return h, c
+    def forward(self, x, h=None):
+        # x shape: [batch_size, seq_len, input_size]
+        output, (h_n, c_n) = self.lstm(x, h)
+        return output, (h_n, c_n)
 
-class FullContextEmbedding(nn.Module):
-    """
-    Full Context Embedding for query samples as described in the paper.
-    Uses attention and LSTM to process the query example in the context
-    of the support set.
-    """
-    def __init__(self, embedding_size, attention_size, num_processing_steps=4):
-        super(FullContextEmbedding, self).__init__()
-        self.embedding_size = embedding_size
-        self.attention_size = attention_size
-        self.num_processing_steps = num_processing_steps
+class BiDirectionalLSTM(nn.Module):
+    def __init__(self, size):
+        super(BiDirectionalLSTM, self).__init__()
+        self.lstm_cell_forward = nn.LSTMCell(size, size)
+        self.lstm_cell_backward = nn.LSTMCell(size, size)
         
-        self.lstm_cell = AttentionLSTMCell(embedding_size, attention_size)
-        
-    def forward(self, query_embedding, support_embeddings):
+    def forward(self, embeddings):
         """
-        Forward pass to generate full context embeddings
+        Process the support set embeddings with a bidirectional LSTM
         
-        query_embedding: embedding of the query example [batch_size, embedding_size]
-        support_embeddings: embeddings of the support set [num_support, embedding_size]
-        
-        Returns: refined query embedding considering full context of support set
-        """
-        batch_size = query_embedding.shape[0]
-        
-        # Initialize hidden and cell state
-        h = torch.zeros(batch_size, self.attention_size, device=query_embedding.device)
-        c = torch.zeros(batch_size, self.attention_size, device=query_embedding.device)
-        
-        # Initialize read vector
-        read = torch.zeros(batch_size, self.embedding_size, device=query_embedding.device)
-        
-        # Process for K steps
-        for k in range(self.num_processing_steps):
-            # Get hidden state
-            h_prev = h + query_embedding
+        Args:
+            embeddings: support set embeddings [n_support, embedding_dim]
             
-            # Calculate attention weights
-            attention_logits = torch.matmul(h_prev, support_embeddings.transpose(0, 1))
-            attention_weights = torch.nn.functional.softmax(attention_logits, dim=1)
-            
-            # Calculate read vector
-            read = torch.matmul(attention_weights, support_embeddings)
-            
-            # Update hidden state
-            h, c = self.lstm_cell(query_embedding, h, c, read)
-        
-        # Return final hidden state + original embedding (residual connection)
-        return h + query_embedding
-
-# Added a bi-directional LSTM for Matching Networks
-class BidirectionalLSTM(nn.Module):
-    """
-    Bidirectional LSTM used in the Full Context Embeddings for processing support samples.
-    
-    Args:
-        embedding_dim (int): Dimension of the input embeddings
-        hidden_size (int): Size of LSTM hidden state
-    """
-    def __init__(self, embedding_dim, hidden_size):
-        super(BidirectionalLSTM, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.hidden_size = hidden_size
-        
-        self.lstm = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_size,
-            bidirectional=True,
-            batch_first=True
-        )
-        
-        # Output projection to map back to embedding size
-        self.projection = nn.Linear(hidden_size * 2, embedding_dim)
-        
-    def forward(self, support_embeddings):
+        Returns:
+            processed_embeddings: processed embeddings [n_support, embedding_dim]
         """
-        Forward pass through the bidirectional LSTM
+        # Get dimensions
+        batch_size = embeddings.shape[0]
+        embedding_dim = embeddings.shape[1]
+        device = embeddings.device
         
-        support_embeddings: embeddings of the support set [num_support, embedding_size]
+        # Forward pass through forward LSTM
+        forward_embeddings = []
+        # Initialize hidden and cell states with batch size 1
+        h_forward = torch.zeros(1, embedding_dim, device=device)
+        c_forward = torch.zeros(1, embedding_dim, device=device)
         
-        Returns: processed support embeddings
-        """
-        # Process through LSTM
-        outputs, _ = self.lstm(support_embeddings.unsqueeze(0))
-        outputs = outputs.squeeze(0)
+        for i in range(batch_size):
+            input_tensor = embeddings[i:i+1]  # Get single item with batch dimension
+            h_forward, c_forward = self.lstm_cell_forward(input_tensor, (h_forward, c_forward))
+            forward_embeddings.append(h_forward.clone())  # Clone to prevent modification
         
-        # Project back to embedding size
-        processed_embeddings = self.projection(outputs)
+        # Backward pass through backward LSTM
+        backward_embeddings = []
+        # Initialize hidden and cell states with batch size 1
+        h_backward = torch.zeros(1, embedding_dim, device=device)
+        c_backward = torch.zeros(1, embedding_dim, device=device)
         
-        # Add residual connection
-        processed_embeddings = processed_embeddings + support_embeddings
+        for i in range(batch_size-1, -1, -1):
+            input_tensor = embeddings[i:i+1]  # Get single item with batch dimension
+            h_backward, c_backward = self.lstm_cell_backward(input_tensor, (h_backward, c_backward))
+            backward_embeddings.insert(0, h_backward.clone())  # Clone to prevent modification
+        
+        # Combine forward and backward embeddings
+        combined_embeddings = []
+        for f, b in zip(forward_embeddings, backward_embeddings):
+            combined_embeddings.append(f + b)
+        
+        # Stack all processed embeddings
+        processed_embeddings = torch.cat(combined_embeddings, dim=0)
         
         return processed_embeddings
 
-class MatchingNet(nn.Module):
-    """
-    Implementation of Matching Networks for Few-Shot Learning.
-    
-    Args:
-        x_dim (int): Number of input channels
-        hid_dim (int): Number of hidden channels in convolutional layers
-        z_dim (int): Number of output channels in the final embedding
-        use_fce (bool): Whether to use Full Context Embeddings with LSTM
-        num_processing_steps (int): Number of processing steps for FCE
-    """
-    def __init__(self, x_dim=3, hid_dim=64, z_dim=64, use_fce=True, num_processing_steps=4):
-        super(MatchingNet, self).__init__()
-        self.encoder = nn.Sequential(
-            conv_block(x_dim, hid_dim),
-            conv_block(hid_dim, hid_dim),
-            conv_block(hid_dim, hid_dim),
-            conv_block(hid_dim, z_dim),
-        )
-        
-        self.use_fce = use_fce
-        self.z_dim = z_dim
-        
-        if use_fce:
-            self.g_bidirectional_lstm = BidirectionalLSTM(z_dim, z_dim // 2)
-            self.f_attention_lstm = FullContextEmbedding(z_dim, z_dim, num_processing_steps)
-
-    def encode(self, x):
-        """Encode inputs through the embedding network"""
-        x = self.encoder(x)
-        return x.view(x.size(0), -1)
-    
-    def embed_support(self, support_images):
+class MatchingNetwork(nn.Module):
+    def __init__(self, n_way, n_support, n_query, feat_dim=64, lstm_layers=1, 
+                 unrolling_steps=2, use_fce=True):
         """
-        Process support set images
-        
-        support_images: [n_way * n_support, channels, height, width]
-        """
-        # Get initial embeddings
-        support_embeddings = self.encode(support_images)
-        
-        # Process with bidirectional LSTM if FCE is enabled
-        if self.use_fce:
-            support_embeddings = self.g_bidirectional_lstm(support_embeddings)
-        
-        return support_embeddings
-    
-    def embed_query(self, query_images, support_embeddings):
-        """
-        Process query set images in the context of support set
-        
-        query_images: [n_queries, channels, height, width]
-        support_embeddings: processed support embeddings
-        """
-        # Get initial embeddings
-        query_embeddings = self.encode(query_images)
-        
-        # Process with attention LSTM if FCE is enabled
-        if self.use_fce:
-            query_embeddings = self.f_attention_lstm(query_embeddings, support_embeddings)
-        
-        return query_embeddings
-    
-    def calculate_cosine_similarity(self, query_embeddings, support_embeddings):
-        """Calculate cosine similarity between query and support embeddings"""
-        # Normalize embeddings
-        query_embeddings_norm = torch.nn.functional.normalize(query_embeddings, p=2, dim=1)
-        support_embeddings_norm = torch.nn.functional.normalize(support_embeddings, p=2, dim=1)
-        
-        # Calculate cosine similarity
-        similarity_matrix = torch.matmul(query_embeddings_norm, support_embeddings_norm.transpose(0, 1))
-        
-        # Apply softmax to get weighted attention
-        similarity_matrix = torch.nn.functional.softmax(similarity_matrix, dim=1)
-        
-        return similarity_matrix
-    
-    def forward(self, support_images, support_labels_one_hot, query_images):
-        """
-        Forward pass for Matching Networks.
+        Implementation of Matching Networks for Few-Shot Learning as described in the paper.
         
         Args:
-            support_images: Support set images [n_way * n_support, channels, h, w]
-            support_labels_one_hot: Support set one-hot encoded labels [n_way * n_support, n_way]
-            query_images: Query set images [n_queries, channels, h, w]
+            n_way: Number of classes in a few-shot classification task
+            n_support: Number of support examples per class
+            n_query: Number of query examples per class
+            feat_dim: Feature dimension after the embedding network
+            lstm_layers: Number of LSTM layers in the FCE
+            unrolling_steps: Number of processing steps for the query embedding
+            use_fce: Whether to use Full Context Embeddings
+        """
+        super(MatchingNetwork, self).__init__()
+        self.n_way = n_way
+        self.n_support = n_support
+        self.n_query = n_query
+        self.feat_dim = feat_dim
+        self.lstm_layers = lstm_layers
+        self.unrolling_steps = unrolling_steps
+        self.use_fce = use_fce
+        
+        # Encoder network
+        self.encoder = nn.Sequential(
+            conv_block(3, feat_dim),
+            conv_block(feat_dim, feat_dim),
+            conv_block(feat_dim, feat_dim),
+            conv_block(feat_dim, feat_dim),
+            nn.Flatten()
+        )
+        
+        # Calculate the expected feature dimension after flattening
+        self.encoder_output_dim = feat_dim * 5 * 5  # 84x84 -> 42x42 -> 21x21 -> 10x10 -> 5x5
+        
+        # Full Context Embedding components
+        if self.use_fce:
+            self.g = BiDirectionalLSTM(self.encoder_output_dim)
+            self.f = AttentionLSTM(self.encoder_output_dim * 2, self.encoder_output_dim, lstm_layers)
+            
+        # Distance network for similarity calculation
+        self.distance_network = DistanceNetwork()
+
+    def forward(self, support_images, support_labels_one_hot, query_images):
+        """
+        Forward pass for Matching Networks
+        
+        Args:
+            support_images: Support images [n_way * n_support, channels, height, width]
+            support_labels_one_hot: Support labels (one-hot) [n_way * n_support, n_way]
+            query_images: Query images [n_way * n_query, channels, height, width]
             
         Returns:
-            query_predictions: Predicted labels for query set [n_queries, n_way]
+            query_predictions: Class probabilities for query samples [n_way * n_query, n_way]
         """
-        # Process support samples (function g in the paper)
-        support_embeddings = self.embed_support(support_images)
+        # Encode support and query images
+        support_embeddings = self.encoder(support_images)
+        query_embeddings = self.encoder(query_images)
         
-        # Process query samples (function f in the paper)
-        query_embeddings = self.embed_query(query_images, support_embeddings)
+        # Apply FCE if enabled
+        if self.use_fce:
+            # Process support embeddings with g
+            support_embeddings = self.g(support_embeddings)
+            
+            # Process query embeddings with f, attending to processed support embeddings
+            num_query = query_embeddings.shape[0]
+            
+            # Initialize query context with zeros
+            query_context = torch.zeros_like(query_embeddings)
+            
+            # Create hidden and cell state for the LSTM
+            h = torch.zeros(self.lstm_layers, num_query, self.encoder_output_dim, 
+                          device=query_embeddings.device)
+            c = torch.zeros(self.lstm_layers, num_query, self.encoder_output_dim, 
+                          device=query_embeddings.device)
+            
+            # Unroll for K steps
+            for k in range(self.unrolling_steps):
+                # Calculate attention between query and support
+                similarities = self.distance_network(support_embeddings, query_embeddings)
+                attention = torch.softmax(similarities, dim=1)
+                
+                # Calculate the read using the attention
+                read = torch.mm(attention, support_embeddings)
+                
+                # Combine query embedding with the read vector
+                query_with_context = torch.cat([query_embeddings, read], dim=1).unsqueeze(1)
+                
+                # Process through the LSTM
+                lstm_out, (h, c) = self.f(query_with_context, (h, c))
+                query_embeddings = lstm_out.squeeze(1)
         
-        # Calculate cosine similarity
-        similarity = self.calculate_cosine_similarity(query_embeddings, support_embeddings)
+        # Calculate distances between query and support embeddings
+        similarities = self.distance_network(support_embeddings, query_embeddings)
         
-        # The output is a weighted sum of support set labels
-        query_predictions = torch.matmul(similarity, support_labels_one_hot)
+        # Apply softmax to get attention weights
+        attention = torch.softmax(similarities, dim=1)
+        
+        # Use attention weights to make predictions
+        query_predictions = torch.mm(attention, support_labels_one_hot)
         
         return query_predictions
 
@@ -373,14 +343,11 @@ def cosine_similarity(a, b):
         similarity_matrix: Tensor of shape (n_queries, n_support)
     """
     # Normalize the vectors
-    a_norm = torch.nn.functional.normalize(a, p=2, dim=1)
-    b_norm = torch.nn.functional.normalize(b, p=2, dim=1)
+    a_norm = a / torch.norm(a, dim=1, keepdim=True)
+    b_norm = b / torch.norm(b, dim=1, keepdim=True)
     
     # Calculate cosine similarity
-    similarity_matrix = torch.matmul(a_norm, b_norm.transpose(0, 1))
-    
-    # Apply softmax to get weighted attention
-    similarity_matrix = torch.nn.functional.softmax(similarity_matrix, dim=1)
+    similarity_matrix = torch.mm(a_norm, b_norm.transpose(0, 1))
     
     return similarity_matrix
 
@@ -717,20 +684,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Matching Networks for Few-Shot Learning')
     
     # Dataset parameters
-    parser.add_argument('--dataset_path', type=str, default='/Users/jadentjeng/Downloads/archive-4', 
+    parser.add_argument('--dataset_path', type=str, default='archive1', 
                         help='Path to the Mini-ImageNet dataset')
     
     # Model parameters
-    parser.add_argument('--x_dim', type=int, default=3, 
-                        help='Number of input channels')
-    parser.add_argument('--hid_dim', type=int, default=64, 
-                        help='Hidden dimension in convolutional layers')
-    parser.add_argument('--z_dim', type=int, default=64, 
-                        help='Output dimension of the embedding')
+    parser.add_argument('--feat_dim', type=int, default=64, 
+                        help='Feature dimension in convolutional layers')
+    parser.add_argument('--lstm_layers', type=int, default=1, 
+                        help='Number of LSTM layers in the FCE')
+    parser.add_argument('--unrolling_steps', type=int, default=2, 
+                        help='Number of unrolling steps for the query embedding in FCE')
     parser.add_argument('--use_fce', action='store_true',
                         help='Use Full Context Embeddings (FCE) with LSTM')
-    parser.add_argument('--num_processing_steps', type=int, default=4,
-                      help='Number of processing steps for FCE in Matching Networks')
     
     # Training parameters
     parser.add_argument('--n_way', type=int, default=5, 
@@ -786,12 +751,15 @@ def main():
     set_seed(args.seed)
     
     # Set device
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("Using MPS device")
+        logger.info("Using MPS device")
     else:
         device = torch.device("cpu")
-        print("MPS device not found, using CPU")
+        logger.info("No GPU found, using CPU")
     
     # Define image transformations
     transform = transforms.Compose([
@@ -806,12 +774,14 @@ def main():
     test_dataset = MiniImageNet(root=args.dataset_path, split="test", transform=transform)
     
     # Initialize the model
-    model = MatchingNet(
-        x_dim=args.x_dim, 
-        hid_dim=args.hid_dim, 
-        z_dim=args.z_dim, 
-        use_fce=args.use_fce,
-        num_processing_steps=args.num_processing_steps
+    model = MatchingNetwork(
+        n_way=args.n_way,
+        n_support=args.n_support,
+        n_query=args.n_query,
+        feat_dim=args.feat_dim,
+        lstm_layers=args.lstm_layers,
+        unrolling_steps=args.unrolling_steps,
+        use_fce=args.use_fce
     )
     model = model.to(device)
     

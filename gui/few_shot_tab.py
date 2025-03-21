@@ -53,14 +53,21 @@ class FewShotTab(QWidget):
         self.annotation_table.cellClicked.connect(self.on_annotation_cell_clicked)
         layout.addWidget(self.annotation_table)
         
+        # Add Export Support Images button
+        self.btn_export_supports = QPushButton("Export Support Images")
+        self.btn_export_supports.clicked.connect(self.export_support_images)
+        layout.addWidget(self.btn_export_supports)
+        
         self.setLayout(layout)
     
     def update_classes(self, classes):
         self.class_selector.clear()
+        self.class_selector.addItem('-')  # Add placeholder option for removing class
         self.class_selector.addItems(classes)
         
         # Update class mapping
         self.class_map = {str(i): class_name for i, class_name in enumerate(classes)}
+        self.class_map['-'] = '-'  # Add mapping for placeholder
     
     def extract_frame_numbers(self, annotations_dir):
         if not os.path.exists(annotations_dir):
@@ -207,3 +214,138 @@ class FewShotTab(QWidget):
         self.annotation_table.setRowCount(0)
         if self.main_window and hasattr(self.main_window, "video_player"):
             self.main_window.video_player.clear_annotations()
+    
+    def export_support_images(self):
+        if not self.main_window or not self.main_window.current_video_path:
+            QMessageBox.warning(self, "No Data", "No video or annotations available to export.")
+            return
+        
+        # Get the directory where all annotation files are stored
+        annotations_dir = self.main_window.get_annotations_dir_for_current_video()
+        if not annotations_dir or not os.path.exists(annotations_dir):
+            QMessageBox.warning(self, "No Annotations", "No annotation directory found.")
+            return
+        
+        # Create supports directory if it doesn't exist
+        support_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets", "supports")
+        os.makedirs(support_dir, exist_ok=True)
+        
+        # Open the video file
+        cap = cv2.VideoCapture(self.main_window.current_video_path)
+        if not cap.isOpened():
+            QMessageBox.warning(self, "Error", "Could not open the video file.")
+            return
+        
+        # Get video dimensions
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Track how many images we've saved for each class
+        class_counts = {}
+        exported_count = 0
+        processed_frames = 0
+        
+        # Get all annotation files
+        annotation_files = [f for f in os.listdir(annotations_dir) if f.startswith("frame_") and f.endswith(".txt")]
+        
+        # Progress dialog would be good here, but keeping it simple
+        QMessageBox.information(self, "Processing", f"Processing {len(annotation_files)} frames...")
+        
+        for annotation_file in annotation_files:
+            try:
+                # Extract frame number from filename
+                frame_idx = int(annotation_file.replace("frame_", "").replace(".txt", ""))
+                
+                # Read annotations from the file
+                annotations = []
+                with open(os.path.join(annotations_dir, annotation_file), 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 5:
+                            try:
+                                class_id = parts[0]
+                                x_center, y_center, width, height = map(float, parts[1:5])
+                                
+                                # Skip placeholder class
+                                if class_id == '-':
+                                    continue
+                                    
+                                # Convert YOLO coordinates to absolute pixel coordinates
+                                x1 = int((x_center - width / 2) * frame_width)
+                                y1 = int((y_center - height / 2) * frame_height)
+                                x2 = int((x_center + width / 2) * frame_width)
+                                y2 = int((y_center + height / 2) * frame_height)
+                                
+                                # Ensure coordinates are within frame bounds
+                                x1 = max(0, x1)
+                                y1 = max(0, y1)
+                                x2 = min(frame_width - 1, x2)
+                                y2 = min(frame_height - 1, y2)
+                                
+                                annotations.append({
+                                    'bbox_abs': [x1, y1, x2, y2],
+                                    'class': class_id
+                                })
+                            except ValueError:
+                                continue
+                
+                # If we have annotations with classes, process the frame
+                if annotations:
+                    # Seek to the frame
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    
+                    if not ret:
+                        continue
+                    
+                    # Process all annotated bounding boxes in this frame
+                    for annotation in annotations:
+                        class_id = annotation.get('class')
+                        
+                        # Initialize counter for this class if not exists
+                        if class_id not in class_counts:
+                            class_counts[class_id] = 0
+                        
+                        # Get absolute coordinates of the bounding box
+                        x1, y1, x2, y2 = annotation['bbox_abs']
+                        
+                        # Crop the image
+                        cropped_img = frame[y1:y2, x1:x2]
+                        
+                        # Format class_id to ensure it's at least 3 digits
+                        formatted_class_id = class_id.zfill(3)
+                        
+                        # Format index to be at least 6 digits
+                        formatted_index = str(class_counts[class_id]).zfill(6)
+                        
+                        # Create filename
+                        filename = f"{formatted_class_id}_{formatted_index}.png"
+                        filepath = os.path.join(support_dir, filename)
+                        
+                        # Save the image
+                        cv2.imwrite(filepath, cropped_img)
+                        
+                        # Increment counter for this class
+                        class_counts[class_id] += 1
+                        exported_count += 1
+                    
+                    processed_frames += 1
+                    
+            except Exception as e:
+                print(f"Error processing frame {annotation_file}: {str(e)}")
+        
+        # Release the video capture
+        cap.release()
+        
+        if exported_count > 0:
+            QMessageBox.information(
+                self, 
+                "Export Complete", 
+                f"Exported {exported_count} support images across {len(class_counts)} classes from {processed_frames} frames to {support_dir}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "No Images Exported",
+                "No annotations with defined classes found to export."
+            )

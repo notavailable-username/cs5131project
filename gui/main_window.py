@@ -2049,8 +2049,3 @@ class MainWindow(QMainWindow):
             # Update few-shot tab with current classes
             if hasattr(self, 'few_shot_tab') and self.classes:
                 self.few_shot_tab.update_classes(self.classes)
-                
-                # If we have a current video and current frame, load annotations
-                if self.current_video_path and hasattr(self, 'video_player'):
-                    current_frame_idx = self.video_player.get_current_frame_idx()
-                    self.few_shot_tab.load_and_display_annotations(current_frame_idx)

@@ -753,11 +753,7 @@ def main():
     # Set device
     if torch.cuda.is_available():
         device = torch.device("cuda")
-<<<<<<< HEAD:models/few_shot_models/matching network/matching_miniimagenet_professional.py
         logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-=======
-        print("Using CUDA")
->>>>>>> b456889c3da1e21e5b00075689d8c85cd6a5e8e8:models/few_shot_models/matching_network/matching_miniimagenet_professional.py
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
         logger.info("Using MPS device")

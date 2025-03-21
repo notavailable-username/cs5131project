@@ -295,10 +295,6 @@ class MainWindow(QMainWindow):
         # Set the initial size ratio
         self.main_splitter.setSizes([600, 600])
         
-        # Timer for updating video
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_video_display)
-        
         # Initialize progress bar to 0%
         if hasattr(self, 'detection_progress'):
             self.detection_progress.setValue(0)
@@ -405,7 +401,7 @@ class MainWindow(QMainWindow):
         load_videos_action.triggered.connect(self.open_video_loader)
 
     def import_video(self):
-        """Import a single video file to datasets/videos"""
+        """Import a single video file to datasets/videos without loading it to player"""
         video_path, _ = QFileDialog.getOpenFileName(
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
         )
@@ -424,25 +420,12 @@ class MainWindow(QMainWindow):
         try:
             import shutil
             shutil.copy2(video_path, destination)
-            
-            # Clear all previously loaded videos before adding the new one
-            self.video_player.clear_all_videos()
-            
-            # Add to video player (using the new multi-video capabilities)
-            self.video_player.add_video(destination, filename)
-            
-            # Update current_video_path
-            self.current_video_path = self.video_player.get_current_video_path()
-            
-            # Load classes from CSV if available
-            self.load_classes_from_csv()
-            
             QMessageBox.information(self, "Video Imported", f"Video imported: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import video: {str(e)}")
     
     def import_multiple_videos(self):
-        """Import multiple video files to datasets/videos"""
+        """Import multiple video files to datasets/videos without loading them to player"""
         video_paths, _ = QFileDialog.getOpenFileNames(
             self, "Select Videos", "", "Video Files (*.mp4 *.avi *.mov)"
         )
@@ -454,9 +437,6 @@ class MainWindow(QMainWindow):
         videos_dir = os.path.join("datasets", "videos")
         os.makedirs(videos_dir, exist_ok=True)
         
-        # Clear all previously loaded videos before adding new ones
-        self.video_player.clear_all_videos()
-        
         imported_count = 0
         try:
             import shutil
@@ -464,23 +444,14 @@ class MainWindow(QMainWindow):
                 filename = os.path.basename(video_path)
                 destination = os.path.join(videos_dir, filename)
                 shutil.copy2(video_path, destination)
-                
-                # Add to video player
-                self.video_player.add_video(destination, filename)
                 imported_count += 1
-            
-            # Update current video path
-            self.current_video_path = self.video_player.get_current_video_path()
-            
-            # Load classes from CSV if available
-            self.load_classes_from_csv()
             
             QMessageBox.information(self, "Videos Imported", f"Imported {imported_count} videos")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import videos: {str(e)}")
 
     def import_videos_directory(self):
-        """Import all videos from a directory to datasets/videos"""
+        """Import all videos from a directory to datasets/videos without loading them to player"""
         directory = QFileDialog.getExistingDirectory(self, "Select Directory with Videos")
         
         if not directory:
@@ -489,9 +460,6 @@ class MainWindow(QMainWindow):
         # Create the datasets/videos directory if it doesn't exist
         videos_dir = os.path.join("datasets", "videos")
         os.makedirs(videos_dir, exist_ok=True)
-        
-        # Clear all previously loaded videos before adding new ones
-        self.video_player.clear_all_videos()
         
         # Get all video files from the directory
         video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
@@ -504,18 +472,8 @@ class MainWindow(QMainWindow):
                 if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in video_extensions):
                     destination = os.path.join(videos_dir, file)
                     shutil.copy2(file_path, destination)
-                    
-                    # Add to video player
-                    self.video_player.add_video(destination, file)
                     imported_count += 1
             
-            # Update current video path if videos were added
-            if imported_count > 0:
-                self.current_video_path = self.video_player.get_current_video_path()
-                
-                # Load classes from CSV if available
-                self.load_classes_from_csv()
-                
             QMessageBox.information(self, "Videos Imported", f"Imported {imported_count} videos to datasets/videos")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import videos: {str(e)}")
@@ -689,37 +647,6 @@ class MainWindow(QMainWindow):
         os.makedirs(directory, exist_ok=True)
         return os.path.join(directory, f"frame_{frame_idx:06d}")
     
-    def import_video(self):
-        """Import a single video file to datasets/videos"""
-        video_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
-        )
-        
-        if not video_path:
-            return
-            
-        # Create the datasets/videos directory if it doesn't exist
-        videos_dir = os.path.join("datasets", "videos")
-        os.makedirs(videos_dir, exist_ok=True)
-        
-        # Copy the video to the datasets/videos directory
-        filename = os.path.basename(video_path)
-        destination = os.path.join(videos_dir, filename)
-        
-        try:
-            import shutil
-            shutil.copy2(video_path, destination)
-            self.video_path = destination
-            # Use the new load_video method with source type
-            self.video_player.load_video(destination, "Original Video")
-            
-            # Load classes from CSV if available
-            self.load_classes_from_csv()
-            
-            QMessageBox.information(self, "Video Imported", f"Video imported: {filename}")
-        except Exception as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to import video: {str(e)}")
-    
     def load_classes_from_csv(self):
         """Load class definitions from classes.csv in the video's annotation directory"""
         if not self.current_video_path:
@@ -756,44 +683,6 @@ class MainWindow(QMainWindow):
             self.class_selector.clear()
             if self.classes:
                 self.class_selector.addItems(self.classes)
-    
-    def import_videos_directory(self):
-        """Import all videos from a directory to datasets/videos"""
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory with Videos")
-        
-        if not directory:
-            return
-            
-        # Create the datasets/videos directory if it doesn't exist
-        videos_dir = os.path.join("datasets", "videos")
-        os.makedirs(videos_dir, exist_ok=True)
-        
-        # Get all video files from the directory
-        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv']
-        imported_count = 0
-        
-        try:
-            import shutil
-            for file in os.listdir(directory):
-                file_path = os.path.join(directory, file)
-                if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in video_extensions):
-                    destination = os.path.join(videos_dir, file)
-                    shutil.copy2(file_path, destination)
-                    imported_count += 1
-            
-            if imported_count > 0:
-                QMessageBox.information(self, "Videos Imported", f"Imported {imported_count} videos to datasets/videos")
-                # Load the first video if we haven't loaded any yet
-                if not self.video_path and imported_count > 0:
-                    first_video = next(iter([os.path.join(videos_dir, f) for f in os.listdir(videos_dir) 
-                                         if any(f.lower().endswith(ext) for ext in video_extensions)]), None)
-                    if first_video:
-                        self.video_path = first_video
-                        self.video_player.load_video(first_video)
-            else:
-                QMessageBox.information(self, "No Videos Found", "No video files found in the selected directory.")
-        except Exception as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to import videos: {str(e)}")
     
     def import_image(self):
         """Import a single image file to datasets/images"""
@@ -923,25 +812,6 @@ class MainWindow(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "Select Image Directory")
         if directory:
             QMessageBox.information(self, "Directory Selected", f"Image directory: {directory}")
-    
-    def manage_classes(self):
-        # Open the class management dialog (similar to LabelingTool class functionality)
-        # For now, we'll just use a simple list
-        self.classes = ["person", "car", "bicycle", "dog", "unknown"]
-        self.class_selector.clear()
-        self.class_selector.addItems(self.classes)
-        QMessageBox.information(self, "Classes Loaded", "Default classes loaded")
-    
-    def toggle_video_playback(self):
-        if self.video_player.is_playing():
-            self.video_player.pause()
-        else:
-            self.video_player.play()
-    
-    def update_video_display(self):
-        # Update the video display with overlay annotations
-        if hasattr(self, 'current_frame') and self.current_frame is not None:
-            self.video_player.set_frame(self.current_frame)
     
     def toggle_ui_during_detection(self, is_running):
         """Enable/disable UI components during detection process"""
@@ -1327,80 +1197,9 @@ class MainWindow(QMainWindow):
         # Re-enable UI controls
         self.toggle_ui_during_detection(False)
         
-        # Restore the player to the original frame position
+        # Restore the player to the original frame position using the per-video tracking
         if self.current_video_path in self.video_frame_positions:
             self.video_player.seek(self.video_frame_positions[self.current_video_path])
-    
-    def add_support_example(self):
-        # Get current class
-        current_class = self.class_selector.currentText()
-        if not current_class:
-            QMessageBox.warning(self, "No Class Selected", "Please select a class first.")
-            return
-            
-        # Get current frame
-        current_frame = self.video_player.get_current_frame()
-        if current_frame is None:
-            QMessageBox.warning(self, "No Frame", "No frame is currently displayed.")
-            return
-            
-        # Add to support examples
-        if current_class not in self.support_examples:
-            self.support_examples[current_class] = []
-        
-        self.support_examples[current_class].append(current_frame)
-        
-        # Update UI
-        self.support_list.addItem(f"{current_class} - Example {len(self.support_examples[current_class])}")
-        
-        # Save few-shot example
-        examples_dir = os.path.join(self.datasets_dir, "few_shot_examples", current_class)
-        os.makedirs(examples_dir, exist_ok=True)
-        timestamp = os.path.getmtime(self.current_video_path) if self.current_video_path else ""
-        example_path = os.path.join(examples_dir, f"example_{timestamp}_{len(self.support_examples[current_class])}.jpg")
-        cv2.imwrite(example_path, current_frame)
-        
-        QMessageBox.information(self, "Example Added", 
-                              f"Added support example for class '{current_class}'.\n"
-                              f"Total examples for this class: {len(self.support_examples[current_class])}")
-    
-    def run_few_shot_classification(self):
-        if not self.support_examples:
-            QMessageBox.warning(self, "No Support Examples", "Please add support examples for few-shot learning.")
-            return
-            
-        # Train few-shot models with support examples
-        for class_name, examples in self.support_examples.items():
-            self.few_shot.add_support_examples(class_name, examples)
-            
-        self.few_shot.train()
-        
-        # Re-run classification on uncertain frames
-        video_name = self.get_video_name()
-        classified_dir = os.path.join(self.datasets_dir, "classified", video_name)
-        os.makedirs(classified_dir, exist_ok=True)
-        
-        for frame_idx, frame in self.uncertain_frames:
-            # Get boxes from motion detector
-            boxes = self.motion_detector.detect(frame)
-            
-            # Display frame with updated classifications
-            display_frame = frame.copy()
-            for box in boxes:
-                x1, y1, x2, y2 = box
-                patch = frame[y1:y2, x1:x2]
-                label, conf = self.few_shot.predict(patch)
-                
-                # Draw box and label
-                cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(display_frame, f"{label} ({conf:.2f})", 
-                          (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Save classified frame
-            cv2.imwrite(os.path.join(classified_dir, f"frame_{frame_idx:06d}.jpg"), display_frame)
-        
-        QMessageBox.information(self, "Classification Complete", 
-                              "Few-shot classification completed.\nResults saved to classified directory.")
     
     def open_label_tool(self):
         if not self.current_video_path:
@@ -1419,13 +1218,6 @@ class MainWindow(QMainWindow):
         
         # Using the separated ImageAnnotatorDialog
         self.open_integrated_label_tool(uncertain_dir)
-
-    def set_label_directory(self, directory):
-        # This method now directly handles the directory without using an external tool
-        if hasattr(self, 'annotator_dialog') and self.annotator_dialog.isVisible():
-            self.annotator_dialog.load_directory(directory)
-        else:
-            self.open_integrated_label_tool(directory)
     
     def open_integrated_label_tool(self, directory=None):
         """Open an integrated labeling tool dialog"""
@@ -1555,88 +1347,6 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Training Error", f"Error starting training: {str(e)}")
-    
-    def show_uncertain_frame(self, item):
-        """Display the selected uncertain frame in the video player"""
-        try:
-            frame_idx = int(item.text().split(' ')[1])
-            
-            # Load the original video and seek to the frame
-            if self.current_video_path and os.path.exists(self.current_video_path):
-                # Use video_player to seek to the frame
-                self.video_player.seek(frame_idx)
-                
-                # Switch to the first tab
-                self.tabs.setCurrentIndex(0)
-        except (ValueError, IndexError) as e:
-            QMessageBox.warning(self, "Error", f"Could not display frame: {str(e)}")
-    
-    def abort_motion_detection(self):
-        """Abort any running motion detection process"""
-        if self.motion_thread and self.motion_thread.isRunning():
-            # Stop the motion detection thread
-            self.motion_thread.stop()
-            self.motion_thread.wait()
-            
-            message = "Motion detection was aborted."
-            if self.batch_processing:
-                message += " Batch processing canceled."
-                self.batch_processing = False
-            
-            QMessageBox.information(self, "Detection Aborted", message)
-            
-        elif self.process_thread and self.process_thread.isRunning():
-            # Stop the video processing thread if that's running instead
-            self.process_thread.stop()
-            self.process_thread.wait()
-            
-            message = "Video processing was aborted."
-            if self.batch_processing:
-                message += " Batch processing canceled."
-                self.batch_processing = False
-            
-            QMessageBox.information(self, "Detection Aborted", message)
-        
-        # Reset progress and UI regardless of which thread was running
-        self.detection_progress.setValue(0)
-        self.frame_number_label.setText("Current frame: -")
-        
-        # Clean up detection files
-        self.clean_detection_files()
-        
-        # Re-enable UI controls
-        self.toggle_ui_during_detection(False)
-        
-        # No need to restore frame position here as it's already handled
-        # by the VideoPlayer component internally
-    
-    def clean_detection_files(self):
-        """Remove all files created during the detection process"""
-        if not self.current_video_path:
-            return
-            
-        video_name = self.get_video_name()
-        
-        # Clean annotations directory - updated to include "videos" in the path
-        annotations_dir = os.path.join(self.annotations_dir, "videos", video_name)
-        if os.path.exists(annotations_dir):
-            try:
-                import shutil
-                shutil.rmtree(annotations_dir)
-                os.makedirs(annotations_dir, exist_ok=True)
-            except Exception as e:
-                print(f"Error cleaning annotations directory: {str(e)}")
-                
-        # Clear any stored detections for this video
-        if self.current_video_path in self.all_detections:
-            del self.all_detections[self.current_video_path]
-            
-        # Clear any stored uncertain frames for this video
-        if self.current_video_path in self.uncertain_frames:
-            del self.uncertain_frames[self.current_video_path]
-            
-        # Clear the uncertain frames list UI
-        self.update_uncertain_frames_list()
     
     def update_uncertain_frames_list(self):
         """Update the uncertain frames list for the current video"""
@@ -1647,231 +1357,6 @@ class MainWindow(QMainWindow):
                 uncertain_frames = self.uncertain_frames[self.current_video_path]
                 for frame_idx, _ in uncertain_frames:
                     self.uncertain_frames_list.addItem(f"Frame {frame_idx}")
-    
-    def add_support_example(self):
-        # Get current class
-        current_class = self.class_selector.currentText()
-        if not current_class:
-            QMessageBox.warning(self, "No Class Selected", "Please select a class first.")
-            return
-            
-        # Get current frame
-        current_frame = self.video_player.get_current_frame()
-        if current_frame is None:
-            QMessageBox.warning(self, "No Frame", "No frame is currently displayed.")
-            return
-            
-        # Add to support examples
-        if current_class not in self.support_examples:
-            self.support_examples[current_class] = []
-        
-        self.support_examples[current_class].append(current_frame)
-        
-        # Update UI
-        self.support_list.addItem(f"{current_class} - Example {len(self.support_examples[current_class])}")
-        
-        # Save few-shot example
-        examples_dir = os.path.join(self.datasets_dir, "few_shot_examples", current_class)
-        os.makedirs(examples_dir, exist_ok=True)
-        timestamp = os.path.getmtime(self.current_video_path) if self.current_video_path else ""
-        example_path = os.path.join(examples_dir, f"example_{timestamp}_{len(self.support_examples[current_class])}.jpg")
-        cv2.imwrite(example_path, current_frame)
-        
-        QMessageBox.information(self, "Example Added", 
-                              f"Added support example for class '{current_class}'.\n"
-                              f"Total examples for this class: {len(self.support_examples[current_class])}")
-    
-    def run_few_shot_classification(self):
-        if not self.support_examples:
-            QMessageBox.warning(self, "No Support Examples", "Please add support examples for few-shot learning.")
-            return
-            
-        # Train few-shot models with support examples
-        for class_name, examples in self.support_examples.items():
-            self.few_shot.add_support_examples(class_name, examples)
-            
-        self.few_shot.train()
-        
-        # Re-run classification on uncertain frames
-        video_name = self.get_video_name()
-        classified_dir = os.path.join(self.datasets_dir, "classified", video_name)
-        os.makedirs(classified_dir, exist_ok=True)
-        
-        for frame_idx, frame in self.uncertain_frames:
-            # Get boxes from motion detector
-            boxes = self.motion_detector.detect(frame)
-            
-            # Display frame with updated classifications
-            display_frame = frame.copy()
-            for box in boxes:
-                x1, y1, x2, y2 = box
-                patch = frame[y1:y2, x1:x2]
-                label, conf = self.few_shot.predict(patch)
-                
-                # Draw box and label
-                cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(display_frame, f"{label} ({conf:.2f})", 
-                          (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Save classified frame
-            cv2.imwrite(os.path.join(classified_dir, f"frame_{frame_idx:06d}.jpg"), display_frame)
-        
-        QMessageBox.information(self, "Classification Complete", 
-                              "Few-shot classification completed.\nResults saved to classified directory.")
-    
-    def open_label_tool(self):
-        if not self.current_video_path:
-            QMessageBox.warning(self, "No Video Selected", "Please select a video first.")
-            return
-            
-        # Create directory for uncertain frames if it doesn't exist
-        video_name = self.get_video_name()
-        uncertain_dir = os.path.join(self.datasets_dir, "uncertain", video_name)
-        os.makedirs(uncertain_dir, exist_ok=True)
-        
-        # Save uncertain frames for labeling
-        for frame_idx, frame in self.uncertain_frames:
-            frame_path = os.path.join(uncertain_dir, f"frame_{frame_idx:06d}.jpg")
-            cv2.imwrite(frame_path, frame)
-        
-        # Using the separated ImageAnnotatorDialog
-        self.open_integrated_label_tool(uncertain_dir)
-
-    def set_label_directory(self, directory):
-        # This method now directly handles the directory without using an external tool
-        if hasattr(self, 'annotator_dialog') and self.annotator_dialog.isVisible():
-            self.annotator_dialog.load_directory(directory)
-        else:
-            self.open_integrated_label_tool(directory)
-    
-    def open_integrated_label_tool(self, directory=None):
-        """Open an integrated labeling tool dialog"""
-        self.annotator_dialog = ImageAnnotatorDialog(self, directory)
-        self.annotator_dialog.finished.connect(self.on_labeling_finished)
-        self.annotator_dialog.show()
-    
-    def on_labeling_finished(self):
-        # Handle any post-labeling tasks here
-        QMessageBox.information(self, "Labeling Complete", 
-                               "Image labeling completed. Annotations saved.")
-        
-        # You might want to reload or update something here
-        # For example, refresh the model with new training data
-        pass
-
-    def prepare_training_data(self):
-        """
-        Prepares and organizes data for model training.
-        Collects annotations and images from the current project.
-        """
-        if not self.current_video_path:
-            QMessageBox.warning(self, "Warning", "Please select a video first.")
-            return False
-            
-        if len(self.classes) == 0:
-            QMessageBox.warning(self, "Warning", "Please define at least one class before preparing training data.")
-            return False
-            
-        # Create training data directory structure
-        video_name = self.get_video_name()
-        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
-        os.makedirs(training_dir, exist_ok=True)
-        
-        # Process annotations and organize files
-        try:
-            # Check if we have detection results to use
-            if not self.all_detections:
-                QMessageBox.warning(self, "Warning", "No detection results available. Run detection first.")
-                return False
-                
-            # Copy annotated images and their labels to the training directory
-            images_count = 0
-            for i, detections in enumerate(self.all_detections):
-                if detections:  # If the frame has detections
-                    # Get the frame image
-                    cap = cv2.VideoCapture(self.current_video_path)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-                    ret, frame = cap.read()
-                    cap.release()
-                    
-                    if ret:
-                        # Save image
-                        img_path = os.path.join(training_dir, f"image_{i:06d}.jpg")
-                        cv2.imwrite(img_path, frame)
-                        
-                        # Save annotations in YOLO format
-                        label_path = os.path.join(training_dir, f"image_{i:06d}.txt")
-                        with open(label_path, 'w') as f:
-                            for det in detections:
-                                class_idx = self.classes.index(det['class']) if det.get('class') in self.classes else 0
-                                x, y, w, h = det['bbox']
-                                # Convert to YOLO format (normalized)
-                                height, width = frame.shape[:2]
-                                x_center = (x + w/2) / width
-                                y_center = (y + h/2) / height
-                                w_norm = w / width
-                                h_norm = h / height
-                                f.write(f"{class_idx} {x_center} {y_center} {w_norm} {h_norm}\n")
-                        
-                        images_count += 1
-            
-            # Create class mapping file
-            with open(os.path.join(training_dir, "classes.txt"), 'w') as f:
-                for class_name in self.classes:
-                    f.write(f"{class_name}\n")
-                    
-            QMessageBox.information(self, "Success", f"Training data prepared successfully with {images_count} images.")
-            return True
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to prepare training data: {str(e)}")
-            return False
-
-    def start_yolo_training(self):
-        """
-        Starts the YOLO model training process with the prepared data.
-        """
-        if not self.current_video_path:
-            QMessageBox.warning(self, "No Video Selected", "Please select a video first.")
-            return
-        
-        video_name = self.get_video_name()
-        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
-        if not os.path.exists(training_dir) or not os.listdir(training_dir):
-            QMessageBox.warning(self, "Missing Data", "Please prepare the training data first.")
-            return
-        
-        # Configure YOLO trainer
-        yolo_config = self.config.get("yolo", {})
-        yolo_config["epochs"] = int(self.epochs_input.currentText())
-        yolo_config["batch_size"] = int(self.batch_size_input.currentText())
-        
-        try:
-            trainer = YOLOTrainer(yolo_config)
-            
-            # Setup training output directory
-            training_output = os.path.join(self.datasets_dir, "yolo_training", video_name)
-            os.makedirs(training_output, exist_ok=True)
-            
-            # Start training in a separate thread (simplified for now)
-            self.training_status.setText("Training started...")
-            
-            # In a real implementation, you'd run this in a QThread with progress updates
-            # For now, we're just showing a message about the intended behavior
-            QMessageBox.information(
-                self, "Training Started", 
-                f"YOLO training started with {yolo_config['epochs']} epochs.\n"
-                f"Results will be saved to {training_output}"
-            )
-            
-            # TODO: Implement actual training in a thread with progress updates
-            # self.training_thread = YOLOTrainingThread(trainer, training_dir, training_output)
-            # self.training_thread.progress_update.connect(self.update_training_progress)
-            # self.training_thread.finished.connect(self.training_complete)
-            # self.training_thread.start()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Training Error", f"Error starting training: {str(e)}")
     
     def on_video_changed(self, index):
         """Handle video change in the player"""

@@ -586,7 +586,15 @@ def main():
     set_seed(args.seed)
     
     # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using CUDA")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("Using MPS device")
+    else:
+        device = torch.device("cpu")
+        print("MPS device not found, using CPU")
     logger.info(f"Using device: {device}")
     
     # Define image transformations

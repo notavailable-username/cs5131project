@@ -806,8 +806,14 @@ class MatchingNetworkInference:
             use_fce=use_fce
         )
         
+        # Fix for models saved with DataParallel (having 'module.' prefix)
+        state_dict = checkpoint['model_state_dict']
+        if any(key.startswith('module.') for key in state_dict.keys()):
+            logger.info("Removing 'module.' prefix from state dict keys (model was trained with DataParallel)")
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        
         # Load weights
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(state_dict)
         model = model.to(self.device)
         model.eval()
         
@@ -945,13 +951,17 @@ class MatchingNetworkInference:
         logger.info(f"Added {len(support_image_paths)} support images. Support set now has "
                    f"{self.support_images.size(0)} images and {n_way} classes")
     
-    def predict(self, query_image_paths):
+    def predict(self, query_image_paths, k=None, q=None):
         """
         Classify one or more query images using the current support set.
         
         Args:
             query_image_paths: Path or list of paths to query images
-            
+            k: Number of support examples per class to use (k-shot)
+               If None, uses all available support examples
+            q: Number of query examples to process at once
+               If None, processes all query examples at once
+                
         Returns:
             If a single query path is provided, returns a tuple: (predicted_label, confidence)
             If multiple query paths are provided, returns a list of such tuples
@@ -974,9 +984,33 @@ class MatchingNetworkInference:
         
         query_images = torch.stack(query_images).to(self.device)
         
-        # Perform inference
-        with torch.no_grad():
-            predictions = self.model(self.support_images, self.support_labels_one_hot, query_images)
+        # Handle k-shot sampling if specified
+        if k is not None:
+            sampled_support_images, sampled_support_labels = self._sample_k_shot_support(k)
+        else:
+            sampled_support_images = self.support_images
+            sampled_support_labels = self.support_labels_one_hot
+        
+        # Handle q-query batching if specified
+        if q is not None and len(query_images) > q:
+            # Process in batches of size q
+            all_predictions = []
+            for i in range(0, len(query_images), q):
+                batch_queries = query_images[i:i+q]
+                with torch.no_grad():
+                    batch_predictions = self.model(sampled_support_images, 
+                                                  sampled_support_labels, 
+                                                  batch_queries)
+                all_predictions.append(batch_predictions)
+            
+            # Concatenate all batch predictions
+            predictions = torch.cat(all_predictions, dim=0)
+        else:
+            # Process all queries at once
+            with torch.no_grad():
+                predictions = self.model(sampled_support_images, 
+                                        sampled_support_labels, 
+                                        query_images)
         
         # Get predicted classes and confidences
         confidences, predicted_indices = torch.max(predictions, dim=1)
@@ -993,6 +1027,45 @@ class MatchingNetworkInference:
         if single_input:
             return results[0]
         return results
+
+    def _sample_k_shot_support(self, k):
+        """
+        Sample k examples per class from the support set.
+        
+        Args:
+            k: Number of examples per class
+            
+        Returns:
+            tuple: (sampled_support_images, sampled_support_labels_one_hot)
+        """
+        # Find examples for each class
+        class_indices = {}
+        for i in range(self.support_labels_one_hot.size(0)):
+            label_idx = torch.argmax(self.support_labels_one_hot[i]).item()
+            if label_idx not in class_indices:
+                class_indices[label_idx] = []
+            class_indices[label_idx].append(i)
+        
+        # Sample k examples per class
+        sampled_indices = []
+        for label_idx, indices in class_indices.items():
+            # If we don't have enough examples for this class, use all available with a warning
+            if len(indices) < k:
+                logger.warning(f"Class {self.unique_labels[label_idx]} has only {len(indices)} examples, "
+                              f"but k={k} was requested. Using all available examples.")
+                sampled_indices.extend(indices)
+            else:
+                # Randomly sample k examples
+                sampled_indices.extend(random.sample(indices, k))
+        
+        # Create sampled support set
+        sampled_support_images = self.support_images[sampled_indices]
+        sampled_support_labels = self.support_labels_one_hot[sampled_indices]
+        
+        logger.info(f"Sampled support set with {sampled_support_images.size(0)} examples "
+                   f"({k} examples per class where possible)")
+        
+        return sampled_support_images, sampled_support_labels
 
 def main():
     """Main function."""

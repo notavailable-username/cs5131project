@@ -1,6 +1,7 @@
 # Ignore datasets directory
 /datasets/
 datasets/
+model_weights/
 
 # Python
 __pycache__/

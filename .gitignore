@@ -1,6 +1,5 @@
 # Ignore datasets directory
 /datasets/
-datasets/
 model_weights/
 
 # Python

@@ -1,5 +1,0 @@
-Test Accuracy: 0.5679
-N-way: 5
-K-shot: 5
-N-query: 15
-N-episodes: 100

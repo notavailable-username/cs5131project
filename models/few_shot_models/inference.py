@@ -104,12 +104,16 @@ class FewShotPredictor:
         Returns:
             List of dictionaries containing predicted class and confidence for each query image
         """
+        print(f"[PREDICT] Starting prediction with {len(support_paths)} classes and {len(query_paths)} query images")
+        
         # Process support images and labels
+        print(f"[PREDICT] Processing support images...")
         support_images = []
         support_labels = []
         class_names = list(support_paths.keys())
         
         for class_idx, class_name in enumerate(class_names):
+            print(f"[PREDICT]   - Loading {len(support_paths[class_name])} images for class '{class_name}'")
             for path in support_paths[class_name]:
                 img = self._load_image(path)
                 support_images.append(img)
@@ -119,16 +123,19 @@ class FewShotPredictor:
             raise ValueError("No support images provided")
         
         # Stack images and convert labels to tensor
+        print(f"[PREDICT] Stacking {len(support_images)} support images and moving to {self.device}")
         support_images = torch.stack(support_images).to(self.device)
         support_labels = torch.tensor(support_labels, device=self.device)
         
         # Process query images
+        print(f"[PREDICT] Processing {len(query_paths)} query images...")
         query_images = []
         for path in query_paths:
             img = self._load_image(path)
             query_images.append(img)
         
         query_images = torch.stack(query_images).to(self.device)
+        print(f"[PREDICT] Query images processed and moved to {self.device}")
         
         # One-hot encode support labels
         n_way = len(class_names)
@@ -137,6 +144,7 @@ class FewShotPredictor:
         # Make predictions using a single unified approach
         with torch.no_grad():
             if finetune:
+                print(f"[PREDICT] Starting fine-tuning for {finetune_steps} steps with learning rate {finetune_lr}...")
                 # Fine-tuning mode: create a working copy of the model
                 if self.is_meta_baseline:
                     model = type(self.model)(self.model.encoder, self.model.method, self.model.temp.item())
@@ -182,18 +190,22 @@ class FewShotPredictor:
                         optimizer.step()
                     
                     if step % 5 == 0:
-                        print(f"Fine-tuning step {step}, loss: {loss.item():.4f}")
+                        print(f"[PREDICT]   Fine-tuning step {step}/{finetune_steps}, loss: {loss.item():.4f}")
                 
                 # Set model back to evaluation mode
                 model.eval()
+                print(f"[PREDICT] Fine-tuning completed")
             else:
+                print(f"[PREDICT] Using pre-trained model without fine-tuning")
                 # Non-fine-tuning mode: use the original model
                 model = self.model
             
             # Evaluation/prediction phase
+            print(f"[PREDICT] Starting prediction phase...")
             
             # Special handling for meta-baseline model
             if self.is_meta_baseline and hasattr(model, 'forward'):
+                print(f"[PREDICT] Using meta-baseline forward pass")
                 # Organize support images by class for meta-baseline's episodic format
                 support_by_class = []
                 for i in range(n_way):
@@ -204,41 +216,54 @@ class FewShotPredictor:
                 # Use balanced shots for meta-baseline by taking min shot count per class
                 if len(support_by_class) == n_way:
                     min_n_shot = min(len(class_examples) for class_examples in support_by_class)
+                    print(f"[PREDICT] Using balanced {min_n_shot}-shot support for meta-baseline")
                     x_shot = torch.stack([examples[:min_n_shot] for examples in support_by_class])
                     
                     # Meta-baseline forward pass with support and query
+                    print(f"[PREDICT] Running meta-baseline forward pass")
                     logits = model(x_shot, query_images)
                 else:
                     # Fallback to prototype-based approach if classes are missing
-                    print(f"Warning: Some classes have no support examples. Using prototype approach instead.")
+                    print(f"[PREDICT] Warning: Some classes have no support examples. Using prototype approach instead.")
                     
                     if hasattr(model, 'encoder'):
+                        print(f"[PREDICT] Extracting features using encoder")
                         support_features = model.encoder(support_images)
                         query_features = model.encoder(query_images)
                     else:
+                        print(f"[PREDICT] Extracting features using model directly")
                         support_features = model(support_images)
                         query_features = model(query_images)
                     
+                    print(f"[PREDICT] Computing prototypes")
                     prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
                     temp = model.temp if hasattr(model, 'temp') else 1.0
+                    print(f"[PREDICT] Computing logits with temperature {temp}")
                     logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
             else:
+                print(f"[PREDICT] Using standard feature extraction and prototype-based classification")
                 # Standard feature extraction and prototype-based classification
                 if hasattr(model, 'encoder'):
+                    print(f"[PREDICT] Extracting features using encoder")
                     support_features = model.encoder(support_images)
                     query_features = model.encoder(query_images)
                 else:
+                    print(f"[PREDICT] Extracting features using model directly")
                     support_features = model(support_images)
                     query_features = model(query_images)
                 
+                print(f"[PREDICT] Computing prototypes")
                 prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
                 temp = model.temp if hasattr(model, 'temp') else 1.0
+                print(f"[PREDICT] Computing logits with temperature {temp}")
                 logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
                 
             # Apply softmax to get confidence values
+            print(f"[PREDICT] Computing probabilities using softmax")
             probabilities = F.softmax(logits, dim=1)
         
         # Process results
+        print(f"[PREDICT] Processing results for {len(query_paths)} query images")
         results = []
         for i, query_path in enumerate(query_paths):
             pred_idx = logits[i].argmax().item()
@@ -253,32 +278,74 @@ class FewShotPredictor:
                                     for j, class_name in enumerate(class_names)}
             })
         
+        print(f"[PREDICT] Prediction completed successfully")
         return results
 
 
 # Example usage
 if __name__ == "__main__":
     # Example usage of the FewShotPredictor
-    predictor = FewShotPredictor(
-        checkpoint_path="./save/meta_mini-imagenet-1shot_meta-baseline-resnet12/max-va.pth")
+    # Get the path to model_weights directory (sibling to models directory)
+    model_weights_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
+        "model_weights"
+    )
+    checkpoint_path = os.path.join(
+        model_weights_dir, 
+        "meta_mini-imagenet-1shot_meta-baseline-resnet12-max-va.pth"
+    )
     
-    # Define support images for each class
-    support_paths = {
-        "dog": [
-            "./materials/mini-imagenet/images/n02110063_2414.jpg", 
-            "./materials/mini-imagenet/images/n02110063_1234.jpg"
-        ],
-        "cat": [
-            "./materials/mini-imagenet/images/n02123159_1950.jpg", 
-            "./materials/mini-imagenet/images/n02123159_5901.jpg"
-        ]
-    }
+    predictor = FewShotPredictor(checkpoint_path=checkpoint_path)
     
-    # Define query images
-    query_paths = [
-        "./materials/mini-imagenet/images/n02110063_6974.jpg",  # a dog
-        "./materials/mini-imagenet/images/n02123159_9803.jpg"   # a cat
-    ]
+    # Base directory where exported images are stored
+    base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "datasets")
+    support_base_dir = os.path.join(base_dir, "supports")
+    query_dir = os.path.join(base_dir, "queries")
+    
+    # Check if directories exist
+    if not os.path.exists(support_base_dir):
+        print(f"Support directory not found at {support_base_dir}")
+        exit(1)
+    if not os.path.exists(query_dir):
+        print(f"Query directory not found at {query_dir}")
+        exit(1)
+    
+    # Dynamically load support class directories
+    support_paths = {}
+    for class_dir in os.listdir(support_base_dir):
+        if os.path.isdir(os.path.join(support_base_dir, class_dir)):
+            # Extract class name from directory name (format: class_id_class_name)
+            try:
+                class_parts = class_dir.split('_', 1)
+                if len(class_parts) > 1:
+                    class_name = class_parts[1]
+                else:
+                    class_name = class_dir
+                    
+                # Get all images for this class
+                class_path = os.path.join(support_base_dir, class_dir)
+                images = [os.path.join(class_path, f) for f in os.listdir(class_path) 
+                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                
+                if images:
+                    support_paths[class_name] = images
+                    print(f"Found {len(images)} support images for class '{class_name}'")
+            except Exception as e:
+                print(f"Error processing class directory {class_dir}: {e}")
+    
+    if not support_paths:
+        print("No support images found in the directories")
+        exit(1)
+    
+    # Get all query images
+    query_paths = [os.path.join(query_dir, f) for f in os.listdir(query_dir)
+                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
+    if not query_paths:
+        print("No query images found")
+        exit(1)
+    
+    print(f"Found {len(query_paths)} query images")
     
     # Get predictions without fine-tuning
     results = predictor.predict(support_paths, query_paths)

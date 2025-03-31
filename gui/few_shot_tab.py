@@ -1,5 +1,6 @@
 import os
 import cv2
+import shutil  # Add this import for directory operations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QTableWidget, QTableWidgetItem, QComboBox, QMessageBox
@@ -54,8 +55,8 @@ class FewShotTab(QWidget):
         layout.addWidget(self.annotation_table)
         
         # Add Export Support Images button
-        self.btn_export_supports = QPushButton("Export Support Images")
-        self.btn_export_supports.clicked.connect(self.export_support_images)
+        self.btn_export_supports = QPushButton("Export Support and Query Images")
+        self.btn_export_supports.clicked.connect(self.export_support_and_query_images)
         layout.addWidget(self.btn_export_supports)
         
         self.setLayout(layout)
@@ -215,7 +216,7 @@ class FewShotTab(QWidget):
         if self.main_window and hasattr(self.main_window, "video_player"):
             self.main_window.video_player.clear_annotations()
     
-    def export_support_images(self):
+    def export_support_and_query_images(self):
         if not self.main_window or not self.main_window.current_video_path:
             QMessageBox.warning(self, "No Data", "No video or annotations available to export.")
             return
@@ -226,9 +227,20 @@ class FewShotTab(QWidget):
             QMessageBox.warning(self, "No Annotations", "No annotation directory found.")
             return
         
-        # Create supports directory if it doesn't exist
-        support_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets", "supports")
-        os.makedirs(support_dir, exist_ok=True)
+        # Create base directories
+        base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
+        support_base_dir = os.path.join(base_dir, "supports")
+        query_dir = os.path.join(base_dir, "queries")
+        
+        # Clear previous exports by removing and recreating directories
+        if os.path.exists(support_base_dir):
+            shutil.rmtree(support_base_dir)
+        if os.path.exists(query_dir):
+            shutil.rmtree(query_dir)
+            
+        # Create fresh directories
+        os.makedirs(support_base_dir, exist_ok=True)
+        os.makedirs(query_dir, exist_ok=True)
         
         # Open the video file
         cap = cv2.VideoCapture(self.main_window.current_video_path)
@@ -240,9 +252,9 @@ class FewShotTab(QWidget):
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Track how many images we've saved for each class
-        class_counts = {}
-        exported_count = 0
+        # Track exported counts
+        support_count = 0
+        query_count = 0
         processed_frames = 0
         
         # Get all annotation files
@@ -255,21 +267,19 @@ class FewShotTab(QWidget):
             try:
                 # Extract frame number from filename
                 frame_idx = int(annotation_file.replace("frame_", "").replace(".txt", ""))
+                # Format frame number to 6 digits
+                formatted_frame_number = f"{frame_idx:06d}"
                 
-                # Read annotations from the file
+                # Read all annotations with their positions in the file
                 annotations = []
                 with open(os.path.join(annotations_dir, annotation_file), 'r') as f:
-                    for line in f:
+                    for annotation_idx, line in enumerate(f):
                         parts = line.strip().split()
                         if len(parts) >= 5:
                             try:
                                 class_id = parts[0]
                                 x_center, y_center, width, height = map(float, parts[1:5])
                                 
-                                # Skip placeholder class
-                                if class_id == '-':
-                                    continue
-                                    
                                 # Convert YOLO coordinates to absolute pixel coordinates
                                 x1 = int((x_center - width / 2) * frame_width)
                                 y1 = int((y_center - height / 2) * frame_height)
@@ -284,12 +294,13 @@ class FewShotTab(QWidget):
                                 
                                 annotations.append({
                                     'bbox_abs': [x1, y1, x2, y2],
-                                    'class': class_id
+                                    'class': class_id,
+                                    'annotation_idx': annotation_idx
                                 })
                             except ValueError:
                                 continue
                 
-                # If we have annotations with classes, process the frame
+                # If we have annotations, process the frame
                 if annotations:
                     # Seek to the frame
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -299,35 +310,37 @@ class FewShotTab(QWidget):
                         continue
                     
                     # Process all annotated bounding boxes in this frame
-                    for annotation in annotations:
-                        class_id = annotation.get('class')
-                        
-                        # Initialize counter for this class if not exists
-                        if class_id not in class_counts:
-                            class_counts[class_id] = 0
+                    for ann in annotations:
+                        class_id = ann.get('class')
+                        annotation_idx = ann.get('annotation_idx')
+                        formatted_annotation_idx = f"{annotation_idx:04d}"
                         
                         # Get absolute coordinates of the bounding box
-                        x1, y1, x2, y2 = annotation['bbox_abs']
+                        x1, y1, x2, y2 = ann['bbox_abs']
                         
                         # Crop the image
                         cropped_img = frame[y1:y2, x1:x2]
                         
-                        # Format class_id to ensure it's at least 3 digits
-                        formatted_class_id = class_id.zfill(3)
+                        # Create filename with frame number and annotation index
+                        filename = f"{formatted_frame_number}_{formatted_annotation_idx}.png"
                         
-                        # Format index to be at least 6 digits
-                        formatted_index = str(class_counts[class_id]).zfill(6)
-                        
-                        # Create filename
-                        filename = f"{formatted_class_id}_{formatted_index}.png"
-                        filepath = os.path.join(support_dir, filename)
-                        
-                        # Save the image
-                        cv2.imwrite(filepath, cropped_img)
-                        
-                        # Increment counter for this class
-                        class_counts[class_id] += 1
-                        exported_count += 1
+                        # Handle based on whether it's a support or query image
+                        if class_id == '-':  # Query image (placeholder class)
+                            filepath = os.path.join(query_dir, filename)
+                            cv2.imwrite(filepath, cropped_img)
+                            query_count += 1
+                        else:  # Support image
+                            # Get class name from the class map
+                            class_name = self.class_map.get(class_id, f"class_{class_id}")
+                            
+                            # Create directory for this class if it doesn't exist
+                            class_dir = os.path.join(support_base_dir, f"{class_id}_{class_name}")
+                            os.makedirs(class_dir, exist_ok=True)
+                            
+                            # Save the image in the class directory
+                            filepath = os.path.join(class_dir, filename)
+                            cv2.imwrite(filepath, cropped_img)
+                            support_count += 1
                     
                     processed_frames += 1
                     
@@ -337,15 +350,16 @@ class FewShotTab(QWidget):
         # Release the video capture
         cap.release()
         
-        if exported_count > 0:
+        if support_count > 0 or query_count > 0:
             QMessageBox.information(
                 self, 
                 "Export Complete", 
-                f"Exported {exported_count} support images across {len(class_counts)} classes from {processed_frames} frames to {support_dir}"
+                f"Exported {support_count} support images and {query_count} query images "
+                f"from {processed_frames} frames to {base_dir}"
             )
         else:
             QMessageBox.information(
                 self,
                 "No Images Exported",
-                "No annotations with defined classes found to export."
+                "No annotations found to export."
             )

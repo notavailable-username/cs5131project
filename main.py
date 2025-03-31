@@ -36,6 +36,7 @@ def ensure_directory_structure():
         os.path.join(base_dir, "videos"),
         os.path.join(base_dir, "images"),
         os.path.join(base_dir, "supports"),
+        os.path.join(base_dir, "queries"),
         os.path.join(base_dir, "uncertain")
     ]
     

@@ -3,7 +3,8 @@ import cv2
 import shutil  # Add this import for directory operations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QTableWidget, QTableWidgetItem, QComboBox, QMessageBox, QProgressBar, QSizePolicy
+    QTableWidget, QTableWidgetItem, QComboBox, QMessageBox, QProgressBar, QSizePolicy,
+    QSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
@@ -64,8 +65,122 @@ class FewShotTab(QWidget):
         self.progress_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
+
+
+        self.btn_train = QPushButton("Train")
+        self.btn_train.clicked.connect(self.train_fsl)
+        layout.addWidget(self.btn_train)
+
+        threshold = QHBoxLayout()
+
+        self.label = QLabel("Threshold:")
+        threshold.addWidget(self.label)
+
+        self.threshold = QSpinBox()
+        self.threshold.setRange(0, 100)
+        self.threshold.setSuffix("%")
+        threshold.addWidget(self.threshold)
+
+        layout.addLayout(threshold)
         
         self.setLayout(layout)
+
+    def train_fsl(self):
+        """
+        Train the few-shot learning model using exported support and query images.
+        Uses the FewShotPredictor class from inference.py to make predictions.
+        """
+        try:
+            # Check if support and query images have been exported
+            base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
+            support_base_dir = os.path.join(base_dir, "supports")
+            query_dir = os.path.join(base_dir, "queries")
+            
+            if not os.path.exists(support_base_dir) or not os.path.exists(query_dir):
+                QMessageBox.warning(self, "No Data", 
+                                   "Please export support and query images first by clicking the 'Export Support and Query Images' button.")
+                return
+                
+            # Check if there are any support images
+            support_classes = [d for d in os.listdir(support_base_dir) if os.path.isdir(os.path.join(support_base_dir, d))]
+            if not support_classes:
+                QMessageBox.warning(self, "No Support Images", 
+                                   "No support image classes found. Please ensure you have exported support images.")
+                return
+                
+            # Check if there are any query images
+            query_images = [f for f in os.listdir(query_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            if not query_images:
+                QMessageBox.warning(self, "No Query Images", 
+                                   "No query images found. Please ensure you have exported query images.")
+                return
+            
+            # Disable the train button and update text
+            self.btn_train.setEnabled(False)
+            self.btn_train.setText("Training in Progress...")
+            
+            # Reset progress bar
+            self.progress_bar.setValue(0)
+            
+            # Create and start the training thread
+            self.train_thread = TrainFSLThread(
+                support_base_dir,
+                query_dir,
+                self.threshold.value() / 100.0  # Convert percent to decimal
+            )
+            
+            # Connect signals
+            self.train_thread.trainProgress.connect(self.update_train_progress)
+            self.train_thread.trainComplete.connect(self.handle_train_complete)
+            self.train_thread.trainError.connect(self.handle_train_error)
+            
+            # Start the thread
+            self.train_thread.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Training Error", f"An error occurred: {str(e)}")
+            self.btn_train.setEnabled(True)
+            self.btn_train.setText("Train")
+
+    def update_train_progress(self, value):
+        """Update the progress bar during training."""
+        self.progress_bar.setValue(value)
+
+    def handle_train_complete(self, results):
+        """Handle completion of training and results display."""
+        self.btn_train.setEnabled(True)
+        self.btn_train.setText("Train")
+
+        # Display results summary in a message box
+        if results:
+            message = "Training complete! Results summary:\n\n"
+
+            # Count how many predictions were above threshold
+            threshold = self.threshold.value() / 100.0
+            above_threshold = sum(1 for r in results if r['confidence'] >= threshold)
+
+            message += f"Total query images: {len(results)}\n"
+            message += f"Predictions above {self.threshold.value()}% confidence: {above_threshold}\n\n"
+
+            # Show top 5 predictions for brevity
+            message += "Top predictions:\n"
+            for i, result in enumerate(sorted(results, key=lambda x: x['confidence'], reverse=True)[:5]):
+                message += f"{i+1}. {os.path.basename(result['image_path'])}: "
+                message += f"{result['predicted_class']} ({result['confidence']:.2%})\n"
+
+            # Add information about where full results are saved
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+            message += f"\nFull results are saved in {output_dir}"
+
+            QMessageBox.information(self, "Training Results", message)
+        else:
+            QMessageBox.warning(self, "No Results", "Training completed but no results were generated.")
+
+    def handle_train_error(self, error_message):
+        """Handle errors during training."""
+        self.btn_train.setEnabled(True)
+        self.btn_train.setText("Train")
+        QMessageBox.critical(self, "Training Error", error_message)
     
     def update_classes(self, classes):
         self.class_selector.clear()
@@ -226,43 +341,43 @@ class FewShotTab(QWidget):
         if not self.main_window or not self.main_window.current_video_path:
             QMessageBox.warning(self, "No Data", "No video or annotations available to export.")
             return
-        
+
         # Get the directory where all annotation files are stored
         annotations_dir = self.main_window.get_annotations_dir_for_current_video()
         if not annotations_dir or not os.path.exists(annotations_dir):
             QMessageBox.warning(self, "No Annotations", "No annotation directory found.")
             return
-        
+
         # Reset progress bar
         self.progress_bar.setValue(0)
-        
+
         # Create and configure the export thread
         self.export_thread = ExportThread(
             self.main_window.current_video_path,
             annotations_dir,
             self.class_map
         )
-        
+
         # Connect signals
         self.export_thread.exportProgress.connect(self.update_export_progress)
         self.export_thread.exportComplete.connect(self.handle_export_complete)
         self.export_thread.exportError.connect(self.handle_export_error)
-        
+
         # Disable export button while processing
         self.btn_export_supports.setEnabled(False)
         self.btn_export_supports.setText("Exporting...")
-        
+
         # Start the thread
         self.export_thread.start()
-    
+
     def update_export_progress(self, value):
         self.progress_bar.setValue(value)
-    
+
     def handle_export_complete(self, support_count, query_count, processed_frames):
         # Re-enable export button
         self.btn_export_supports.setEnabled(True)
         self.btn_export_supports.setText("Export Support and Query Images")
-        
+
         # Show completion message
         base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
         if support_count > 0 or query_count > 0:
@@ -278,12 +393,12 @@ class FewShotTab(QWidget):
                 "No Images Exported",
                 "No annotations found to export."
             )
-    
+
     def handle_export_error(self, error_message):
         # Re-enable export button
         self.btn_export_supports.setEnabled(True)
         self.btn_export_supports.setText("Export Support and Query Images")
-        
+
         # Show error message
         QMessageBox.critical(self, "Export Error", error_message)
 
@@ -434,3 +549,115 @@ class ExportThread(QThread):
             
         except Exception as e:
             self.exportError.emit(f"Export error: {str(e)}")
+
+class TrainFSLThread(QThread):
+    """Thread for handling the few-shot learning training process."""
+    trainProgress = pyqtSignal(int)
+    trainComplete = pyqtSignal(list)  # List of prediction results
+    trainError = pyqtSignal(str)
+    
+    def __init__(self, support_dir, query_dir, threshold=0.5):
+        super().__init__()
+        self.support_dir = support_dir
+        self.query_dir = query_dir
+        self.threshold = threshold
+        self.is_running = True
+    
+    def stop(self):
+        self.is_running = False
+    
+    def run(self):
+        try:
+            # Import here to avoid circular imports
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from models.few_shot_models.inference import FewShotPredictor, write_results_to_file
+            import datetime
+            
+            # Set up progress reporting
+            self.trainProgress.emit(10)
+            
+            # Get model weights path
+            model_weights_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                "model_weights"
+            )
+            checkpoint_path = os.path.join(
+                model_weights_dir, 
+                "meta_mini-imagenet-1shot_meta-baseline-resnet12-max-va.pth"
+            )
+            
+            if not os.path.exists(checkpoint_path):
+                self.trainError.emit(f"Model checkpoint not found at: {checkpoint_path}")
+                return
+                
+            self.trainProgress.emit(20)
+            
+            # Initialize predictor
+            predictor = FewShotPredictor(checkpoint_path=checkpoint_path)
+            
+            self.trainProgress.emit(30)
+            
+            # Prepare support paths dictionary
+            support_paths = {}
+            for class_dir in os.listdir(self.support_dir):
+                if os.path.isdir(os.path.join(self.support_dir, class_dir)):
+                    # Extract class name from directory name (format: class_id_class_name)
+                    try:
+                        class_parts = class_dir.split('_', 1)
+                        if len(class_parts) > 1:
+                            class_name = class_parts[1]
+                        else:
+                            class_name = class_dir
+                            
+                        # Get all images for this class
+                        class_path = os.path.join(self.support_dir, class_dir)
+                        images = [os.path.join(class_path, f) for f in os.listdir(class_path) 
+                                if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                        
+                        if images:
+                            support_paths[class_name] = images
+                    except Exception as e:
+                        self.trainError.emit(f"Error processing class directory {class_dir}: {str(e)}")
+                        return
+            
+            if not support_paths:
+                self.trainError.emit("No support images found in the directories")
+                return
+                
+            self.trainProgress.emit(40)
+            
+            # Get all query images
+            query_paths = [os.path.join(self.query_dir, f) for f in os.listdir(self.query_dir)
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            
+            if not query_paths:
+                self.trainError.emit("No query images found")
+                return
+                
+            self.trainProgress.emit(50)
+            
+            # Create output directory for results
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                                     "results")
+            os.makedirs(output_dir, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Use the fine-tuning option as specified
+            self.trainProgress.emit(60)
+            results = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
+            
+            self.trainProgress.emit(80)
+            
+            # Write results to file
+            output_path = os.path.join(output_dir, f"predictions_{timestamp}.txt")
+            write_results_to_file(results, output_path)
+            
+            self.trainProgress.emit(100)
+            
+            # Signal completion
+            self.trainComplete.emit(results)
+            
+        except Exception as e:
+            self.trainError.emit(f"Training error: {str(e)}")

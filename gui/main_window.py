@@ -281,7 +281,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._create_detection_tab(), "Detection")
         self.tabs.addTab(self._create_few_shot_tab(), "Few-Shot Learning")
-        self.tabs.addTab(self._create_annotation_tab(), "Manual Annotation")
+        # self.tabs.addTab(self._create_annotation_tab(), "Manual Annotation")
         self.tabs.addTab(self._create_training_tab(), "YOLO Training")
         
         # Connect tab changed signal

@@ -571,17 +571,20 @@ class TrainFSLThread(QThread):
             # Import here to avoid circular imports
             import sys
             import os
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from models.few_shot_models.inference import FewShotPredictor, write_results_to_file
+
+            # Import the required module
+            from models.few_shot_models.inference import FewShotPredictor, write_results_to_json
+
             import datetime
             
+            print("passed import")
             # Set up progress reporting
             self.trainProgress.emit(10)
             
             # Get model weights path
             model_weights_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                "model_weights"
+                "models/few_shot_models/save"
             )
             checkpoint_path = os.path.join(
                 model_weights_dir, 
@@ -652,7 +655,7 @@ class TrainFSLThread(QThread):
             
             # Write results to file
             output_path = os.path.join(output_dir, f"predictions_{timestamp}.txt")
-            write_results_to_file(results, output_path)
+            write_results_to_json(results, output_path)
             
             self.trainProgress.emit(100)
             
@@ -660,4 +663,5 @@ class TrainFSLThread(QThread):
             self.trainComplete.emit(results)
             
         except Exception as e:
+            print(f"Training error: {str(e)}")
             self.trainError.emit(f"Training error: {str(e)}")

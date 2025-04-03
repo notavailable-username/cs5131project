@@ -1,16 +1,20 @@
+import sys
 import os
 import torch
 import torch.nn.functional as F
 from PIL import Image
 import numpy as np
 from torchvision import transforms
-import models
-import utils
-import utils.few_shot as fs
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional, Union
 import datetime
 
+current_dir = os.path.dirname(os.path.abspath(__file__))  # Current script directory
+sys.path.insert(0, current_dir)
+print(sys.path)
+from models.few_shot_models.models.models import make, load
+import models.few_shot_models.utils as fs_utils  # Rename to avoid conflicts
+import models.few_shot_models.utils.few_shot as fs
 
 class FewShotPredictor:
     """
@@ -54,7 +58,7 @@ class FewShotPredictor:
         # Check if it's a meta-baseline model or a classifier model
         if model_dict.get('model') == 'meta-baseline':
             # Meta-baseline model
-            self.model = models.load(model_dict)
+            self.model = load(model_dict)
             self.is_meta_baseline = True
         else:
             # Classifier model - we'll use its encoder
@@ -62,7 +66,7 @@ class FewShotPredictor:
             encoder_args = model_dict['model_args'].get('encoder_args', {})
             
             # Create encoder
-            self.model = models.make(encoder_name, **encoder_args)
+            self.model = make(encoder_name, **encoder_args)
             self.model.load_state_dict(model_dict['model_sd'], strict=False)
             self.is_meta_baseline = False
         
@@ -147,28 +151,7 @@ class FewShotPredictor:
             if finetune:
                 print(f"[PREDICT] Starting fine-tuning for {finetune_steps} steps with learning rate {finetune_lr}...")
                 # Fine-tuning mode: create a working copy of the model
-                if self.is_meta_baseline:
-                    # Properly create a copy of the meta-baseline model with required constructor args
-                    if hasattr(self.model, 'encoder') and hasattr(self.model, 'method'):
-                        # Extract parameters from the original model
-                        encoder = self.model.encoder
-                        method = self.model.method
-                        # Get temp parameter, defaulting to 1.0 if not available
-                        temp = self.model.temp.item() if hasattr(self.model, 'temp') else 1.0
-                        # Create new instance with the same parameters
-                        model = type(self.model)(encoder, method=method, temp=temp)
-                        model.load_state_dict(self.model.state_dict())
-                    else:
-                        # Fallback: use the original model if we can't extract parameters
-                        model = self.model
-                else:
-                    # For non-meta-baseline models that may have simpler constructors
-                    try:
-                        model = type(self.model)()
-                        model.load_state_dict(self.model.state_dict())
-                    except TypeError:
-                        # Fallback: use the original model if constructor fails
-                        model = self.model
+                model = self.model
                 
                 model = model.to(self.device)
                 model.train()
@@ -196,7 +179,7 @@ class FewShotPredictor:
                     
                     # Compute logits
                     temp = model.temp if hasattr(model, 'temp') else 1.0
-                    logits = utils.compute_logits(features, prototypes, 'cos', temp)
+                    logits = fs_utils.compute_logits(features, prototypes, 'cos', temp)
                     
                     # Compute loss
                     loss = F.cross_entropy(logits, support_labels)
@@ -256,7 +239,7 @@ class FewShotPredictor:
                     prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
                     temp = model.temp if hasattr(model, 'temp') else 1.0
                     print(f"[PREDICT] Computing logits with temperature {temp}")
-                    logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
+                    logits = fs_utils.compute_logits(query_features, prototypes, 'cos', temp)
             else:
                 print(f"[PREDICT] Using standard feature extraction and prototype-based classification")
                 # Standard feature extraction and prototype-based classification
@@ -273,7 +256,7 @@ class FewShotPredictor:
                 prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
                 temp = model.temp if hasattr(model, 'temp') else 1.0
                 print(f"[PREDICT] Computing logits with temperature {temp}")
-                logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
+                logits = fs_utils.compute_logits(query_features, prototypes, 'cos', temp)
                 
             # Apply softmax to get confidence values
             print(f"[PREDICT] Computing probabilities using softmax")
@@ -326,6 +309,56 @@ def write_results_to_file(results: List[Dict], output_path: str):
         
         f.write("=" * 50 + "\n")
 
+def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: Optional[List[int]] = None):
+    """
+    Write prediction results to a JSON file in a format optimized for processing.
+    
+    Args:
+        results: List of prediction result dictionaries
+        output_path: Path to save the output JSON file
+        frame_numbers: Optional list of frame numbers corresponding to each result.
+                       If not provided, will use indices as frame numbers.
+    """
+    import json
+    import os
+    
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Create structured data for JSON format
+    json_data = {}
+    
+    # Use provided frame numbers or default to indices
+    if frame_numbers is None:
+        frame_numbers = list(range(len(results)))
+    
+    # Ensure we have the right number of frame numbers
+    if len(frame_numbers) != len(results):
+        raise ValueError(f"Number of frame numbers ({len(frame_numbers)}) doesn't match number of results ({len(results)})")
+    
+    # Build the JSON structure: frame_number -> annotation_idx -> {class_id: confidence}
+    for idx, (result, frame_num) in enumerate(zip(results, frame_numbers)):
+        # Convert frame number to string for JSON
+        frame_key = str(frame_num)
+        
+        # Initialize frame entry if it doesn't exist
+        if frame_key not in json_data:
+            json_data[frame_key] = {}
+        
+        # Use result index as annotation_idx
+        annotation_idx = str(idx)
+        
+        # Map each class to its confidence
+        class_confidences = result['all_confidences']
+        
+        # Store in the nested structure
+        json_data[frame_key][annotation_idx] = class_confidences
+    
+    # Write to JSON file
+    with open(output_path, 'w') as f:
+        json.dump(json_data, f, indent=2)
+    
+    print(f"Results written to JSON file: {output_path}")
+
 
 # Example usage
 if __name__ == "__main__":
@@ -333,7 +366,7 @@ if __name__ == "__main__":
     # Get the path to model_weights directory (sibling to models directory)
     model_weights_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
-        "model_weights"
+        "models/few_shot_models/save"
     )
     checkpoint_path = os.path.join(
         model_weights_dir, 
@@ -403,7 +436,8 @@ if __name__ == "__main__":
     
     # Write results to file
     output_path = os.path.join(output_dir, f"predictions_no_finetune_{timestamp}.txt")
-    write_results_to_file(results, output_path)
+    write_results_to_json(results, output_path)
+    #write_results_to_file(results, output_path)
     print(f"Results without fine-tuning saved to: {output_path}")
     
     # Get predictions with fine-tuning
@@ -411,5 +445,6 @@ if __name__ == "__main__":
     
     # Write fine-tuned results to file
     output_path_ft = os.path.join(output_dir, f"predictions_with_finetune_{timestamp}.txt")
-    write_results_to_file(results_finetuned, output_path_ft)
+    write_results_to_json(results, output_path)
+    #write_results_to_file(results_finetuned, output_path_ft)
     print(f"Results with fine-tuning saved to: {output_path_ft}")

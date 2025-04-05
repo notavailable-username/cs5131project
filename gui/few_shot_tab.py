@@ -88,6 +88,8 @@ class FewShotTab(QWidget):
         self.threshold = QSpinBox()
         self.threshold.setRange(0, 100)
         self.threshold.setSuffix("%")
+        self.threshold.setValue(50)  # Default value of 50%
+        self.threshold.valueChanged.connect(self.on_threshold_changed)  # Connect value changed signal
         threshold.addWidget(self.threshold)
         layout.addLayout(threshold)
 
@@ -97,6 +99,30 @@ class FewShotTab(QWidget):
         layout.addWidget(self.btn_toggle_view)
         
         self.setLayout(layout)
+
+    def on_threshold_changed(self, value):
+        """Handle threshold value changes"""
+        results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+        # Only update view if currently showing predictions
+        if self.btn_toggle_view.isChecked():
+            if hasattr(self, 'fsl_results'):
+                current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+                self.load_and_display_predictions(current_frame_idx, self.fsl_results)
+            elif len(os.listdir(results_dir)) != 0:
+                results = {}
+                for filename in os.listdir(results_dir):
+                    if filename.endswith(".json"):
+                        with open(os.path.join(results_dir, filename), 'r') as f:
+                            data = json.load(f)
+                            results.update(data)
+
+                print("Extracting of results from toggle successful")
+                if results:
+                    current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+                    self.load_and_display_predictions(current_frame_idx, results)
+                else:
+                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
+
 
     def toggle_prediction_view(self):
         """Toggle between showing annotations and predictions"""
@@ -146,14 +172,21 @@ class FewShotTab(QWidget):
         frame_predictions = results.get(frame_key, {})
         print(f"Predictions for {frame_key}: {frame_predictions}")
 
+        # Get threshold value (convert percentage to decimal)
+        threshold = self.threshold.value() / 100.0
+
         matching_ann = []
         for class_idx, predictions in frame_predictions.items():
             # Find the annotation with matching index in current annotations
             for ann in self.current_annotations:
                 if str(ann.get('annotation_id', '')) in predictions.keys():
-                    match = ann.copy()
-                    match["confidence"] = predictions.get(str(ann.get('annotation_id', '')))
-                    matching_ann.append(match)
+                    confidence = predictions.get(str(ann.get('annotation_id', '')))
+                    # Only include predictions that meet the threshold
+                    if confidence >= threshold:
+                        match = ann.copy()
+                        match["confidence"] = confidence
+                        matching_ann.append(match)
+
 
         # Display predictions in the video player
         self.main_window.video_player.annotate_current_frame(matching_ann, is_prediction=True)

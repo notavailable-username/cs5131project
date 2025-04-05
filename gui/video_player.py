@@ -586,7 +586,7 @@ class VideoPlayer(QWidget):
         self.current_frame = frame.copy()
         self.set_image(self.current_frame)
     
-    def set_image_with_annotations(self, frame, annotations=None, show_labels=True):
+    def set_image_with_annotations(self, frame, annotations=None, show_labels=True, is_prediction=False):
         """Set image with optional annotations overlay, with support for selection highlighting"""
         if frame is None:
             return
@@ -594,6 +594,8 @@ class VideoPlayer(QWidget):
         # Make a copy of the frame to draw on
         display_frame = frame.copy()
         
+        print(is_prediction)
+        print()
         # Draw annotations if provided
         if annotations:
             for annotation in annotations:
@@ -601,9 +603,20 @@ class VideoPlayer(QWidget):
                     x1, y1, x2, y2 = annotation['bbox_abs']
                     label = annotation.get('class', '-1')
                     confidence = annotation.get('confidence', 0.0)
+
+                    # Determine color and style based on whether it's a prediction
+                    if is_prediction:
+                        # Prediction styling - green with confidence
+                        color = (0, 255, 0)  # Green for predictions
+                        if confidence > 0:
+                            label_text = f"{label} ({confidence:.1%})"
+                        else:
+                            label_text = label
+                    else:
+                        # Ground truth styling - grey
+                        color = (0, 0, 0)  # Grey for ground truth
+                        label_text = label
                     
-                    # Determine color based on selection state
-                    color = (0, 255, 0)  # Default green
                     if annotation.get('selected', False):
                         color = (0, 0, 255)  # Selected boxes in red
                     
@@ -621,18 +634,22 @@ class VideoPlayer(QWidget):
         # Display the annotated frame
         self.set_image(display_frame)
     
-    def annotate_current_frame(self, annotations):
+    def annotate_current_frame(self, annotations, is_prediction=False):
         """Store annotations for current frame and update display"""
         if self.current_frame is not None:
             self.annotations = annotations
-            self.set_image_with_annotations(self.current_frame, self.annotations)
+            self.set_image_with_annotations(self.current_frame, self.annotations, is_prediction=is_prediction)
     
     def clear_annotations(self):
         """Clear annotations and redisplay the current frame"""
         self.annotations = []
         if self.current_frame is not None:
             self.set_image(self.current_frame)
-    
+
+    def clear_predictions(self):
+        if self.current_frame is not None:
+            self.set_image_with_annotations(self.current_frame, self.annotations, is_prediction=False)
+
     def capture_frame(self):
         """Capture the current frame from the video"""
         if self.cap is not None and self.current_frame_idx >= 0:

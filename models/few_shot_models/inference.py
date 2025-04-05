@@ -9,9 +9,6 @@ from collections import defaultdict
 from typing import List, Dict, Tuple, Optional, Union
 import datetime
 
-current_dir = os.path.dirname(os.path.abspath(__file__))  # Current script directory
-sys.path.insert(0, current_dir)
-print(sys.path)
 from models.few_shot_models.models.models import make, load
 import models.few_shot_models.utils as fs_utils  # Rename to avoid conflicts
 import models.few_shot_models.utils.few_shot as fs
@@ -435,7 +432,7 @@ if __name__ == "__main__":
     results = predictor.predict(support_paths, query_paths)
     
     # Write results to file
-    output_path = os.path.join(output_dir, f"predictions_no_finetune_{timestamp}.txt")
+    output_path = os.path.join(output_dir, f"predictions_no_finetune_{timestamp}.json")
     write_results_to_json(results, output_path)
     #write_results_to_file(results, output_path)
     print(f"Results without fine-tuning saved to: {output_path}")
@@ -444,7 +441,7 @@ if __name__ == "__main__":
     results_finetuned = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
     
     # Write fine-tuned results to file
-    output_path_ft = os.path.join(output_dir, f"predictions_with_finetune_{timestamp}.txt")
+    output_path_ft = os.path.join(output_dir, f"predictions_with_finetune_{timestamp}.json")
     write_results_to_json(results, output_path)
     #write_results_to_file(results_finetuned, output_path_ft)
     print(f"Results with fine-tuning saved to: {output_path_ft}")

@@ -1,4 +1,5 @@
 import os
+import json
 import cv2
 import shutil  # Add this import for directory operations
 from PyQt6.QtWidgets import (
@@ -54,22 +55,30 @@ class FewShotTab(QWidget):
         
         self.annotation_table.cellClicked.connect(self.on_annotation_cell_clicked)
         layout.addWidget(self.annotation_table)
+
+        export = QHBoxLayout()
         
         # Add Export Support Images button
         self.btn_export_supports = QPushButton("Export Support and Query Images")
         self.btn_export_supports.clicked.connect(self.export_support_and_query_images)
-        layout.addWidget(self.btn_export_supports)
+        export.addWidget(self.btn_export_supports)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimumWidth(250)
-        self.progress_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.progress_bar.setValue(0)
-        layout.addWidget(self.progress_bar)
-
+        self.export_progress = QProgressBar()
+        self.export_progress.setMinimumWidth(250)
+        self.export_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.export_progress.setValue(0)
+        export.addWidget(self.export_progress)
+        layout.addLayout(export)
 
         self.btn_train = QPushButton("Train")
         self.btn_train.clicked.connect(self.train_fsl)
         layout.addWidget(self.btn_train)
+
+        self.train_progress = QProgressBar()
+        self.train_progress.setMinimumWidth(250)
+        self.train_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.train_progress.setValue(0)
+        layout.addWidget(self.train_progress)
 
         threshold = QHBoxLayout()
 
@@ -80,10 +89,104 @@ class FewShotTab(QWidget):
         self.threshold.setRange(0, 100)
         self.threshold.setSuffix("%")
         threshold.addWidget(self.threshold)
-
         layout.addLayout(threshold)
+
+        self.btn_toggle_view = QPushButton("Show Predictions")
+        self.btn_toggle_view.setCheckable(True)
+        self.btn_toggle_view.clicked.connect(self.toggle_prediction_view)
+        layout.addWidget(self.btn_toggle_view)
         
         self.setLayout(layout)
+
+    def toggle_prediction_view(self):
+        """Toggle between showing annotations and predictions"""
+        if self.btn_toggle_view.isChecked():
+            self.btn_toggle_view.setText("Show Annotations")
+            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+            # Show predictions if available
+            if hasattr(self, 'fsl_results'):
+                current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+                self.load_and_display_predictions(current_frame_idx, self.fsl_results)
+            elif len(os.listdir(results_dir)) != 0:
+                # Load predictions from the results directory
+                results = {}
+                for filename in os.listdir(results_dir):
+                    if filename.endswith(".json"):
+                        with open(os.path.join(results_dir, filename), 'r') as f:
+                            data = json.load(f)
+                            results.update(data)
+
+                print("Extracting of results from toggle successful")
+                if results:
+                    current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+                    self.load_and_display_predictions(current_frame_idx, results)
+                else:
+                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
+        else:
+            self.btn_toggle_view.setText("Show Predictions")
+            # Show original annotations
+            current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+            self.load_and_display_annotations(current_frame_idx)
+
+    def load_and_display_predictions(self, frame_idx, results):
+        """Load and display predictions from FSL results for the current frame."""
+        if not self.main_window or not self.main_window.current_video_path:
+            return
+
+        # Get the current frame for dimensions
+        current_frame = self.main_window.video_player.get_current_frame()
+        if current_frame is None:
+            return
+
+        frame_h, frame_w = current_frame.shape[:2]
+        predictions = []
+
+        # Find predictions for this frame
+        frame_key = f"{frame_idx:06d}"  # Match the format used in export
+        frame_predictions = results.get(frame_key, {})
+        print(f"Predictions for {frame_key}: {frame_predictions}")
+
+        matching_ann = []
+        for class_idx, predictions in frame_predictions.items():
+            # Find the annotation with matching index in current annotations
+            for ann in self.current_annotations:
+                if str(ann.get('annotation_id', '')) in predictions.keys():
+                    match = ann.copy()
+                    match["confidence"] = predictions.get(str(ann.get('annotation_id', '')))
+                    matching_ann.append(match)
+
+        # Display predictions in the video player
+        self.main_window.video_player.annotate_current_frame(matching_ann, is_prediction=True)
+        self.update_prediction_table(matching_ann)
+
+    def update_prediction_table(self, predictions):
+        """Update the table to show prediction results."""
+        self.annotation_table.setRowCount(0)
+
+        for i, prediction in enumerate(predictions):
+            self.annotation_table.insertRow(i)
+
+            # Column 0: Select (shows confidence as percentage)
+            confidence_percent = prediction.get('confidence', 0) * 100
+            confidence_item = QTableWidgetItem(f"{confidence_percent:.1f}%")
+            confidence_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.annotation_table.setItem(i, 0, confidence_item)
+
+            # Column 1: Predicted class (with all predictions as tooltip)
+            class_id = prediction.get('class', 'unknown')
+            class_name = self.class_map.get(class_id, class_id)
+
+            # Create tooltip with all predictions
+            all_preds = prediction.get('all_predictions', {})
+            tooltip_lines = []
+            for pred_class, conf in sorted(all_preds.items(), key=lambda x: x[1], reverse=True):
+                pred_name = self.class_map.get(pred_class, pred_class)
+                tooltip_lines.append(f"{pred_name}: {conf*100:.1f}%")
+
+            class_item = QTableWidgetItem(class_name)
+            class_item.setToolTip("\n".join(tooltip_lines))
+            class_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.annotation_table.setItem(i, 1, class_item)
 
     def train_fsl(self):
         """
@@ -120,7 +223,7 @@ class FewShotTab(QWidget):
             self.btn_train.setText("Training in Progress...")
             
             # Reset progress bar
-            self.progress_bar.setValue(0)
+            self.train_progress.setValue(0)
             
             # Create and start the training thread
             self.train_thread = TrainFSLThread(
@@ -144,14 +247,36 @@ class FewShotTab(QWidget):
 
     def update_train_progress(self, value):
         """Update the progress bar during training."""
-        self.progress_bar.setValue(value)
+        self.train_progress.setValue(value)
 
-    def handle_train_complete(self, results):
+    def handle_train_complete(self, results_path):
         """Handle completion of training and results display."""
         self.btn_train.setEnabled(True)
         self.btn_train.setText("Train")
 
-        # Display results summary in a message box
+        try:
+            #Load the training results from the json file
+            with open(results_path, 'r') as f:
+                results = json.load(f)
+            
+            self.fsl_results = self._organize_results_by_frame(results)
+
+            #Display predictions for the current frame
+            current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+            self.load_and_display_predictions(current_frame_idx, self.fsl_results)
+
+            QMessageBox.information(
+                self,
+                "Training Complete",
+                f"FSL training completed successfully!\nResults saved to: {results_path}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error Loading Results",
+                f"Could not load results from {results_path}: {str(e)}"
+            )
+        """ # Display results summary in a message box
         if results:
             message = "Training complete! Results summary:\n\n"
 
@@ -172,10 +297,32 @@ class FewShotTab(QWidget):
             output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
             message += f"\nFull results are saved in {output_dir}"
 
+            self.load_and_display_predictions(self.main_window.video_player.get_current_frame_idx(), results)
+
             QMessageBox.information(self, "Training Results", message)
         else:
-            QMessageBox.warning(self, "No Results", "Training completed but no results were generated.")
+            QMessageBox.warning(self, "No Results", "Training completed but no results were generated.") """
 
+    def _organize_results_by_frame(self, results):
+        """Organize the flat results list into a nested dictionary by frame and annotation index."""
+        organized = {}
+
+        for filename, prediction in results.items():
+            # Extract frame number and annotation index from filename
+            # Format is: frame_{frame_num}_{annotation_idx}.png
+            parts = filename.split('_')
+
+            if len(parts) >= 3:
+                frame_num = parts[1]
+                annotation_idx = parts[2].split('.')[0]  # Remove extension
+
+                if frame_num not in organized:
+                    organized[frame_num] = {}
+
+                organized[frame_num][annotation_idx] = prediction['all_predictions']
+
+        return organized
+    
     def handle_train_error(self, error_message):
         """Handle errors during training."""
         self.btn_train.setEnabled(True)
@@ -207,19 +354,29 @@ class FewShotTab(QWidget):
     def goto_prev_annotated_frame(self):
         if not self.main_window or not self.main_window.current_video_path:
             return
+
         current_frame = self.main_window.video_player.get_current_frame_idx()
         annotations_dir = self.main_window.get_annotations_dir_for_current_video()
         frame_numbers = self.extract_frame_numbers(annotations_dir)
+
         if not frame_numbers:
             QMessageBox.information(self, "No Annotations", "No annotations found for this video.")
             return
+
         prev_frame = next((frame for frame in reversed(frame_numbers) if frame < current_frame), None)
+
         if prev_frame is not None:
             self.request_frame_seek.emit(prev_frame)
-            self.load_and_display_annotations(prev_frame)
+            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
+                self.load_and_display_predictions(prev_frame, self.fsl_results)
+            else:
+                self.load_and_display_annotations(prev_frame)
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[-1])
-            self.load_and_display_annotations(frame_numbers[-1])
+            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
+                self.load_and_display_predictions(frame_numbers[-1], self.fsl_results)
+            else:
+                self.load_and_display_annotations(frame_numbers[-1])
     
     def goto_next_annotated_frame(self):
         if not self.main_window or not self.main_window.current_video_path:
@@ -233,10 +390,16 @@ class FewShotTab(QWidget):
         next_frame = next((frame for frame in frame_numbers if frame > current_frame), None)
         if next_frame is not None:
             self.request_frame_seek.emit(next_frame)
-            self.load_and_display_annotations(next_frame)
+            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
+                self.load_and_display_predictions(next_frame, self.fsl_results)
+            else:
+                self.load_and_display_annotations(next_frame)
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[0])
-            self.load_and_display_annotations(frame_numbers[0])
+            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
+                self.load_and_display_predictions(frame_numbers[0], self.fsl_results)
+            else:
+                self.load_and_display_annotations(frame_numbers[0])
     
     def load_and_display_annotations(self, frame_idx):
         if not self.main_window or not self.main_window.current_video_path:
@@ -256,6 +419,7 @@ class FewShotTab(QWidget):
         frame_h, frame_w = current_frame.shape[:2]
         annotations = []
         with open(annotation_file, 'r') as f:
+            counter = 1
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 5:
@@ -269,8 +433,10 @@ class FewShotTab(QWidget):
                         annotations.append({
                             'bbox_abs': [max(0, x1), max(0, y1), min(frame_w - 1, x2), min(frame_h - 1, y2)],
                             'class': class_id,
-                            'bbox_yolo': [x_center, y_center, width, height]
+                            'bbox_yolo': [x_center, y_center, width, height],
+                            'annotation_id': counter
                         })
+                        counter += 1
                     except ValueError:
                         continue
         self.main_window.video_player.annotate_current_frame(annotations)
@@ -349,7 +515,7 @@ class FewShotTab(QWidget):
             return
 
         # Reset progress bar
-        self.progress_bar.setValue(0)
+        self.export_progress.setValue(0)
 
         # Create and configure the export thread
         self.export_thread = ExportThread(
@@ -371,7 +537,7 @@ class FewShotTab(QWidget):
         self.export_thread.start()
 
     def update_export_progress(self, value):
-        self.progress_bar.setValue(value)
+        self.export_progress.setValue(value)
 
     def handle_export_complete(self, support_count, query_count, processed_frames):
         # Re-enable export button
@@ -571,6 +737,11 @@ class TrainFSLThread(QThread):
             # Import here to avoid circular imports
             import sys
             import os
+            """ current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Current script directory
+            models_path = os.path.abspath(os.path.join(current_dir, "models/few_shot_models"))
+
+            # Temporarily add to sys.path
+            sys.path.insert(0, models_path) """
 
             # Import the required module
             from models.few_shot_models.inference import FewShotPredictor, write_results_to_json
@@ -643,7 +814,7 @@ class TrainFSLThread(QThread):
             
             # Create output directory for results
             output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                     "results")
+                                     "results/")
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
@@ -660,7 +831,7 @@ class TrainFSLThread(QThread):
             self.trainProgress.emit(100)
             
             # Signal completion
-            self.trainComplete.emit(results)
+            self.trainComplete.emit(output_path)
             
         except Exception as e:
             print(f"Training error: {str(e)}")

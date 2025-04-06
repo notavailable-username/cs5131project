@@ -594,8 +594,6 @@ class VideoPlayer(QWidget):
         # Make a copy of the frame to draw on
         display_frame = frame.copy()
         
-        print(is_prediction)
-        print()
         # Draw annotations if provided
         if annotations:
             for annotation in annotations:

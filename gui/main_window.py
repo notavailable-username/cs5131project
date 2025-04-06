@@ -16,6 +16,7 @@ from gui.class_editor_dialog import ClassEditorDialog
 from .video_player import VideoPlayer
 from .image_annotator_dialog import ImageAnnotatorDialog
 from .video_loader_dialog import VideoLoaderDialog  # Import the new dialog
+from .yolo_tab import YOLOTab  # Import the new YOLOTab class
 from models.motion_detector import MotionDetector
 from models.yolo_trainer import YOLOTrainer
 import json
@@ -531,12 +532,10 @@ class MainWindow(QMainWindow):
         # Also disable tabs if needed
         detection_tab_enabled = True  # Always keep detection tab enabled
         few_shot_tab_enabled = has_video
-        annotation_tab_enabled = has_video
         training_tab_enabled = has_video
             
         self.tabs.setTabEnabled(1, few_shot_tab_enabled)  # Few-Shot tab
-        self.tabs.setTabEnabled(2, annotation_tab_enabled)  # Annotation tab
-        self.tabs.setTabEnabled(3, training_tab_enabled)  # Training tab
+        self.tabs.setTabEnabled(2, training_tab_enabled)  # Training tab (YOLO)
     
     def _create_detection_tab(self):
         widget = QWidget()
@@ -775,36 +774,8 @@ class MainWindow(QMainWindow):
         return widget
     
     def _create_training_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout()
-        
-        # Training settings
-        layout.addWidget(QLabel("YOLO Training Settings:"))
-        
-        self.epochs_input = QComboBox()
-        self.epochs_input.addItems(["10", "20", "50", "100"])
-        layout.addWidget(QLabel("Training Epochs:"))
-        layout.addWidget(self.epochs_input)
-        
-        self.batch_size_input = QComboBox()
-        self.batch_size_input.addItems(["4", "8", "16", "32"])
-        layout.addWidget(QLabel("Batch Size:"))
-        layout.addWidget(self.batch_size_input)
-        
-        # Training controls
-        btn_prepare_training = QPushButton("Prepare Training Data")
-        btn_prepare_training.clicked.connect(self.prepare_training_data)
-        layout.addWidget(btn_prepare_training)
-        
-        btn_start_training = QPushButton("Start YOLO Training")
-        btn_start_training.clicked.connect(self.start_yolo_training)
-        layout.addWidget(btn_start_training)
-        
-        self.training_status = QLabel("Training not started")
-        layout.addWidget(self.training_status)
-        
-        widget.setLayout(layout)
-        return widget
+        """Creates the YOLO training tab by instantiating the YOLOTab class"""
+        return YOLOTab(self)
     
     def load_images(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Image Directory")
@@ -1232,120 +1203,6 @@ class MainWindow(QMainWindow):
         # For example, refresh the model with new training data
         pass
 
-    def prepare_training_data(self):
-        """
-        Prepares and organizes data for model training.
-        Collects annotations and images from the current project.
-        """
-        if not self.current_video_path:
-            QMessageBox.warning(self, "Warning", "Please select a video first.")
-            return False
-            
-        if len(self.classes) == 0:
-            QMessageBox.warning(self, "Warning", "Please define at least one class before preparing training data.")
-            return False
-            
-        # Create training data directory structure
-        video_name = self.get_video_name()
-        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
-        os.makedirs(training_dir, exist_ok=True)
-        
-        # Process annotations and organize files
-        try:
-            # Check if we have detection results to use
-            if not self.all_detections:
-                QMessageBox.warning(self, "Warning", "No detection results available. Run detection first.")
-                return False
-                
-            # Copy annotated images and their labels to the training directory
-            images_count = 0
-            for i, detections in enumerate(self.all_detections):
-                if detections:  # If the frame has detections
-                    # Get the frame image
-                    cap = cv2.VideoCapture(self.current_video_path)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-                    ret, frame = cap.read()
-                    cap.release()
-                    
-                    if ret:
-                        # Save image
-                        img_path = os.path.join(training_dir, f"image_{i:06d}.jpg")
-                        cv2.imwrite(img_path, frame)
-                        
-                        # Save annotations in YOLO format
-                        label_path = os.path.join(training_dir, f"image_{i:06d}.txt")
-                        with open(label_path, 'w') as f:
-                            for det in detections:
-                                class_idx = self.classes.index(det['class']) if det.get('class') in self.classes else 0
-                                x, y, w, h = det['bbox']
-                                # Convert to YOLO format (normalized)
-                                height, width = frame.shape[:2]
-                                x_center = (x + w/2) / width
-                                y_center = (y + h/2) / height
-                                w_norm = w / width
-                                h_norm = h / height
-                                f.write(f"{class_idx} {x_center} {y_center} {w_norm} {h_norm}\n")
-                        
-                        images_count += 1
-            
-            # Create class mapping file
-            with open(os.path.join(training_dir, "classes.txt"), 'w') as f:
-                for class_name in self.classes:
-                    f.write(f"{class_name}\n")
-                    
-            QMessageBox.information(self, "Success", f"Training data prepared successfully with {images_count} images.")
-            return True
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to prepare training data: {str(e)}")
-            return False
-
-    def start_yolo_training(self):
-        """
-        Starts the YOLO model training process with the prepared data.
-        """
-        if not self.current_video_path:
-            QMessageBox.warning(self, "No Video Selected", "Please select a video first.")
-            return
-        
-        video_name = self.get_video_name()
-        training_dir = os.path.join(self.datasets_dir, "training_data", video_name)
-        if not os.path.exists(training_dir) or not os.listdir(training_dir):
-            QMessageBox.warning(self, "Missing Data", "Please prepare the training data first.")
-            return
-        
-        # Configure YOLO trainer
-        yolo_config = self.config.get("yolo", {})
-        yolo_config["epochs"] = int(self.epochs_input.currentText())
-        yolo_config["batch_size"] = int(self.batch_size_input.currentText())
-        
-        try:
-            trainer = YOLOTrainer(yolo_config)
-            
-            # Setup training output directory
-            training_output = os.path.join(self.datasets_dir, "yolo_training", video_name)
-            os.makedirs(training_output, exist_ok=True)
-            
-            # Start training in a separate thread (simplified for now)
-            self.training_status.setText("Training started...")
-            
-            # In a real implementation, you'd run this in a QThread with progress updates
-            # For now, we're just showing a message about the intended behavior
-            QMessageBox.information(
-                self, "Training Started", 
-                f"YOLO training started with {yolo_config['epochs']} epochs.\n"
-                f"Results will be saved to {training_output}"
-            )
-            
-            # TODO: Implement actual training in a thread with progress updates
-            # self.training_thread = YOLOTrainingThread(trainer, training_dir, training_output)
-            # self.training_thread.progress_update.connect(self.update_training_progress)
-            # self.training_thread.finished.connect(self.training_complete)
-            # self.training_thread.start()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Training Error", f"Error starting training: {str(e)}")
-    
     def update_uncertain_frames_list(self):
         """Update the uncertain frames list for the current video"""
         if hasattr(self, 'uncertain_frames_list'):
@@ -1532,3 +1389,9 @@ class MainWindow(QMainWindow):
             # Update few-shot tab with current classes
             if hasattr(self, 'few_shot_tab') and self.classes:
                 self.few_shot_tab.update_classes(self.classes)
+        elif index == 2:  # YOLO Training tab
+            # Ensure YOLO tab has current classes if available
+            yolo_tab = self.tabs.widget(2)
+            if isinstance(yolo_tab, YOLOTab) and hasattr(self, 'classes') and self.classes:
+                # Method to update classes would be added to YOLOTab if needed
+                pass

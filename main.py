@@ -37,7 +37,16 @@ def ensure_directory_structure():
         os.path.join(base_dir, "images"),
         os.path.join(base_dir, "supports"),
         os.path.join(base_dir, "queries"),
-        os.path.join(base_dir, "uncertain")
+        os.path.join(base_dir, "uncertain"),
+        # YOLO directory structure
+        os.path.join(base_dir, "yolo"),
+        os.path.join(base_dir, "yolo", "train", "images"),
+        os.path.join(base_dir, "yolo", "train", "labels"),
+        os.path.join(base_dir, "yolo", "val", "images"),
+        os.path.join(base_dir, "yolo", "val", "labels"),
+        os.path.join(base_dir, "yolo", "test", "images"),
+        os.path.join(base_dir, "yolo", "test", "labels"),
+        os.path.join(base_dir, "yolo", "config")
     ]
     
     # Check and create directories if needed

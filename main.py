@@ -1,6 +1,6 @@
 import argparse
 import yaml
-from cli import run_cli
+from cli import InteractiveCLI
 from gui.main_window import MainWindow
 from PyQt6.QtWidgets import QApplication
 import sys
@@ -86,7 +86,8 @@ def main():
         sys.exit(app.exec())
     else:
         print("Running command-line interface...")
-        run_cli(config)
+        cli_app = InteractiveCLI(config)
+        cli_app.run()
 
 if __name__ == "__main__":
     print("Motion-Aware Few-Shot Object Detection System")

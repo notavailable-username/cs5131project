@@ -142,7 +142,7 @@ class FewShotTab(QWidget):
                             data = json.load(f)
                             results.update(data)
 
-                print("Extracting of results from toggle successful")
+                # print("Extracting of results from toggle successful")
                 if results:
                     current_frame_idx = self.main_window.video_player.get_current_frame_idx()
                     self.load_and_display_predictions(current_frame_idx, results)
@@ -170,7 +170,7 @@ class FewShotTab(QWidget):
         # Find predictions for this frame
         frame_key = f"{frame_idx:06d}"  # Match the format used in export
         frame_predictions = results.get(frame_key, {})
-        print(f"Predictions for {frame_key}: {frame_predictions}")
+        # print(f"Predictions for {frame_key}: {frame_predictions}")
 
         # Get threshold value (convert percentage to decimal)
         threshold = self.threshold.value() / 100.0
@@ -400,16 +400,10 @@ class FewShotTab(QWidget):
 
         if prev_frame is not None:
             self.request_frame_seek.emit(prev_frame)
-            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
-                self.load_and_display_predictions(prev_frame, self.fsl_results)
-            else:
-                self.load_and_display_annotations(prev_frame)
+            self.toggle_prediction_view()
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[-1])
-            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
-                self.load_and_display_predictions(frame_numbers[-1], self.fsl_results)
-            else:
-                self.load_and_display_annotations(frame_numbers[-1])
+            self.toggle_prediction_view()
     
     def goto_next_annotated_frame(self):
         if not self.main_window or not self.main_window.current_video_path:
@@ -423,16 +417,10 @@ class FewShotTab(QWidget):
         next_frame = next((frame for frame in frame_numbers if frame > current_frame), None)
         if next_frame is not None:
             self.request_frame_seek.emit(next_frame)
-            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
-                self.load_and_display_predictions(next_frame, self.fsl_results)
-            else:
-                self.load_and_display_annotations(next_frame)
+            self.toggle_prediction_view()
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[0])
-            if self.btn_toggle_view.isChecked() and hasattr(self, 'fsl_results'):
-                self.load_and_display_predictions(frame_numbers[0], self.fsl_results)
-            else:
-                self.load_and_display_annotations(frame_numbers[0])
+            self.toggle_prediction_view()
     
     def load_and_display_annotations(self, frame_idx):
         if not self.main_window or not self.main_window.current_video_path:

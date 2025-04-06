@@ -1,0 +1,431 @@
+import os
+import torch
+import torch.nn.functional as F
+from PIL import Image
+import numpy as np
+from torchvision import transforms
+import models
+import utils
+import utils.few_shot as fs
+from collections import defaultdict
+from typing import List, Dict, Tuple, Optional, Union
+import datetime
+
+
+class FewShotPredictor:
+    """
+    A class for making few-shot learning predictions based on support and query images.
+    This uses the Meta-Baseline architecture for few-shot classification.
+    """
+
+    def __init__(self, checkpoint_path: str, device: Optional[str] = None):
+        """
+        Initialize the few-shot predictor.
+        
+        Args:
+            checkpoint_path: Path to the model checkpoint (.pth file)
+            device: Device to run the model on ('cpu' or 'cuda'). If None, use CUDA if available.
+        """
+        self.checkpoint_path = checkpoint_path
+
+        # Set device
+        if device is None:
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            self.device = device
+
+        # Load model
+        self._load_model()
+
+        # Define transforms for image preprocessing
+        self.transform = transforms.Compose([
+            transforms.Resize(84),
+            transforms.CenterCrop(84),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                std=[0.229, 0.224, 0.225])
+        ])
+
+    def _load_model(self):
+        """Load the model from checkpoint."""
+        print(f"Loading model from {self.checkpoint_path}")
+        model_dict = torch.load(self.checkpoint_path, map_location=self.device)
+
+        # Check if it's a meta-baseline model or a classifier model
+        if model_dict.get('model') == 'meta-baseline':
+            # Meta-baseline model
+            self.model = models.load(model_dict)
+            self.is_meta_baseline = True
+        else:
+            # Classifier model - we'll use its encoder
+            encoder_name = model_dict['model_args']['encoder']
+            encoder_args = model_dict['model_args'].get('encoder_args', {})
+
+            # Create encoder
+            self.model = models.make(encoder_name, **encoder_args)
+            self.model.load_state_dict(model_dict['model_sd'], strict=False)
+            self.is_meta_baseline = False
+
+        self.model.to(self.device)
+        self.model.eval()
+        print("Model loaded successfully")
+
+    def _load_image(self, image_path: str) -> torch.Tensor:
+        """
+        Load and preprocess an image.
+        
+        Args:
+            image_path: Path to the image file
+            
+        Returns:
+            Preprocessed image tensor
+        """
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image file not found: {image_path}")
+
+        image = Image.open(image_path).convert('RGB')
+        return self.transform(image)
+
+    def predict(self, 
+                support_paths: Dict[str, List[str]], 
+                query_paths: List[str],
+                finetune: bool = False,
+                finetune_steps: int = 10,
+                finetune_lr: float = 0.01) -> List[Dict[str, Union[str, float]]]:
+        """
+        Predict classes for query images based on support images.
+        
+        Args:
+            support_paths: Dictionary mapping class names to lists of support image paths
+            query_paths: List of paths to query images
+            finetune: Whether to finetune the model on support examples
+            finetune_steps: Number of fine-tuning steps (if finetune=True)
+            finetune_lr: Learning rate for fine-tuning (if finetune=True)
+            
+        Returns:
+            List of dictionaries containing predicted class and confidence for each query image
+        """
+        print(f"[PREDICT] Starting prediction with {len(support_paths)} classes and {len(query_paths)} query images")
+
+        # Process support images and labels
+        print(f"[PREDICT] Processing support images...")
+        support_images = []
+        support_labels = []
+        class_names = list(support_paths.keys())
+
+        for class_idx, class_name in enumerate(class_names):
+            print(f"[PREDICT]   - Loading {len(support_paths[class_name])} images for class '{class_name}'")
+            for path in support_paths[class_name]:
+                img = self._load_image(path)
+                support_images.append(img)
+                support_labels.append(class_idx)
+
+        if not support_images:
+            raise ValueError("No support images provided")
+
+        # Stack images and convert labels to tensor
+        print(f"[PREDICT] Stacking {len(support_images)} support images and moving to {self.device}")
+        support_images = torch.stack(support_images).to(self.device)
+        support_labels = torch.tensor(support_labels, device=self.device)
+
+        # Process query images
+        print(f"[PREDICT] Processing {len(query_paths)} query images...")
+        query_images = []
+        for path in query_paths:
+            img = self._load_image(path)
+            query_images.append(img)
+
+        query_images = torch.stack(query_images).to(self.device)
+        print(f"[PREDICT] Query images processed and moved to {self.device}")
+
+        # One-hot encode support labels
+        n_way = len(class_names)
+        support_labels_onehot = F.one_hot(support_labels, n_way).float()
+
+        # Make predictions using a single unified approach
+        with torch.no_grad():
+            if finetune:
+                print(f"[PREDICT] Starting fine-tuning for {finetune_steps} steps with learning rate {finetune_lr}...")
+                # Fine-tuning mode: create a working copy of the model
+                if self.is_meta_baseline:
+                    model = type(self.model)(self.model.encoder, self.model.method, self.model.temp.item())
+                    model.load_state_dict(self.model.state_dict())
+                    # Properly create a copy of the meta-baseline model with required constructor args
+                    if hasattr(self.model, 'encoder') and hasattr(self.model, 'method'):
+                        # Extract parameters from the original model
+                        encoder = self.model.encoder
+                        method = self.model.method
+                        # Get temp parameter, defaulting to 1.0 if not available
+                        temp = self.model.temp.item() if hasattr(self.model, 'temp') else 1.0
+                        # Create new instance with the same parameters
+                        model = type(self.model)(encoder, method=method, temp=temp)
+                        model.load_state_dict(self.model.state_dict())
+                    else:
+                        # Fallback: use the original model if we can't extract parameters
+                        model = self.model
+                else:
+                    model = type(self.model)()
+                    model.load_state_dict(self.model.state_dict())
+                    # For non-meta-baseline models that may have simpler constructors
+                    try:
+                        model = type(self.model)()
+                        model.load_state_dict(self.model.state_dict())
+                    except TypeError:
+                        # Fallback: use the original model if constructor fails
+                        model = self.model
+
+                model = model.to(self.device)
+                model.train()
+
+                # Create optimizer
+                if hasattr(model, 'encoder'):
+                    params = [p for p in model.parameters() if p.requires_grad]
+                else:
+                    params = model.parameters()
+
+                optimizer = torch.optim.Adam(params, lr=finetune_lr)
+
+                # Fine-tuning loop
+                for step in range(finetune_steps):
+                    optimizer.zero_grad()
+
+                    # Extract features
+                    if hasattr(model, 'encoder'):
+                        features = model.encoder(support_images)
+                    else:
+                        features = model(support_images)
+
+                    # Compute prototypes
+                    prototypes = fs.compute_prototypes(features, support_labels_onehot)
+
+                    # Compute logits
+                    temp = model.temp if hasattr(model, 'temp') else 1.0
+                    logits = utils.compute_logits(features, prototypes, 'cos', temp)
+
+                    # Compute loss
+                    loss = F.cross_entropy(logits, support_labels)
+
+                    # Release graph for manual backward
+                    with torch.set_grad_enabled(True):
+                        loss.backward()
+                        optimizer.step()
+
+                    if step % 5 == 0:
+                        print(f"[PREDICT]   Fine-tuning step {step}/{finetune_steps}, loss: {loss.item():.4f}")
+
+                # Set model back to evaluation mode
+                model.eval()
+                print(f"[PREDICT] Fine-tuning completed")
+            else:
+                print(f"[PREDICT] Using pre-trained model without fine-tuning")
+                # Non-fine-tuning mode: use the original model
+                model = self.model
+
+            # Evaluation/prediction phase
+            print(f"[PREDICT] Starting prediction phase...")
+
+            # Special handling for meta-baseline model
+            if self.is_meta_baseline and hasattr(model, 'forward'):
+                print(f"[PREDICT] Using meta-baseline forward pass")
+                # Organize support images by class for meta-baseline's episodic format
+                support_by_class = []
+                for i in range(n_way):
+                    class_images = support_images[support_labels == i]
+                    if len(class_images) > 0:
+                        support_by_class.append(class_images)
+
+                # Use balanced shots for meta-baseline by taking min shot count per class
+                if len(support_by_class) == n_way:
+                    min_n_shot = min(len(class_examples) for class_examples in support_by_class)
+                    print(f"[PREDICT] Using balanced {min_n_shot}-shot support for meta-baseline")
+                    x_shot = torch.stack([examples[:min_n_shot] for examples in support_by_class])
+
+                    # Meta-baseline forward pass with support and query
+                    print(f"[PREDICT] Running meta-baseline forward pass")
+                    logits = model(x_shot, query_images)
+                else:
+                    # Fallback to prototype-based approach if classes are missing
+                    print(f"[PREDICT] Warning: Some classes have no support examples. Using prototype approach instead.")
+
+                    if hasattr(model, 'encoder'):
+                        print(f"[PREDICT] Extracting features using encoder")
+                        support_features = model.encoder(support_images)
+                        query_features = model.encoder(query_images)
+                    else:
+                        print(f"[PREDICT] Extracting features using model directly")
+                        support_features = model(support_images)
+                        query_features = model(query_images)
+
+                    print(f"[PREDICT] Computing prototypes")
+                    prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
+                    temp = model.temp if hasattr(model, 'temp') else 1.0
+                    print(f"[PREDICT] Computing logits with temperature {temp}")
+                    logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
+            else:
+                print(f"[PREDICT] Using standard feature extraction and prototype-based classification")
+                # Standard feature extraction and prototype-based classification
+                if hasattr(model, 'encoder'):
+                    print(f"[PREDICT] Extracting features using encoder")
+                    support_features = model.encoder(support_images)
+                    query_features = model.encoder(query_images)
+                else:
+                    print(f"[PREDICT] Extracting features using model directly")
+                    support_features = model(support_images)
+                    query_features = model(query_images)
+
+                print(f"[PREDICT] Computing prototypes")
+                prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
+                temp = model.temp if hasattr(model, 'temp') else 1.0
+                print(f"[PREDICT] Computing logits with temperature {temp}")
+                logits = utils.compute_logits(query_features, prototypes, 'cos', temp)
+
+            # Apply softmax to get confidence values
+            print(f"[PREDICT] Computing probabilities using softmax")
+            probabilities = F.softmax(logits, dim=1)
+
+        # Process results
+        print(f"[PREDICT] Processing results for {len(query_paths)} query images")
+        results = []
+        for i, query_path in enumerate(query_paths):
+            pred_idx = logits[i].argmax().item()
+            pred_class = class_names[pred_idx]
+            conf_value = probabilities[i, pred_idx].item()
+
+            results.append({
+                'image_path': query_path,
+                'predicted_class': pred_class,
+                'confidence': conf_value,
+                'all_confidences': {class_name: probabilities[i, j].item() 
+                                    for j, class_name in enumerate(class_names)}
+            })
+
+        print(f"[PREDICT] Prediction completed successfully")
+        return results
+
+
+def write_results_to_file(results: List[Dict], output_path: str):
+    """
+    Write prediction results to a text file.
+    
+    Args:
+        results: List of prediction result dictionaries
+        output_path: Path to save the output text file
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        f.write(f"Prediction Results - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Total images processed: {len(results)}\n\n")
+        
+        for result in results:
+            f.write(f"Image: {os.path.basename(result['image_path'])}\n")
+            f.write(f"Predicted class: {result['predicted_class']}\n")
+            f.write(f"Confidence: {result['confidence']:.4f}\n")
+            
+            f.write("All class confidences:\n")
+            for class_name, conf in sorted(result['all_confidences'].items(), 
+                                        key=lambda x: x[1], reverse=True):
+                f.write(f"  {class_name}: {conf:.4f}\n")
+            f.write("\n")
+        
+        f.write("=" * 50 + "\n")
+
+
+# Example usage
+if __name__ == "__main__":
+    # Example usage of the FewShotPredictor
+    # Get the path to model_weights directory (sibling to models directory)
+    model_weights_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
+        "model_weights"
+    )
+    checkpoint_path = os.path.join(
+        model_weights_dir, 
+        "meta_mini-imagenet-1shot_meta-baseline-resnet12-max-va.pth"
+    )
+
+    predictor = FewShotPredictor(checkpoint_path=checkpoint_path)
+
+    # Base directory where exported images are stored
+    base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "datasets")
+    support_base_dir = os.path.join(base_dir, "supports")
+    query_dir = os.path.join(base_dir, "queries")
+
+    # Check if directories exist
+    if not os.path.exists(support_base_dir):
+        print(f"Support directory not found at {support_base_dir}")
+        exit(1)
+    if not os.path.exists(query_dir):
+        print(f"Query directory not found at {query_dir}")
+        exit(1)
+
+    # Dynamically load support class directories
+    support_paths = {}
+    for class_dir in os.listdir(support_base_dir):
+        if os.path.isdir(os.path.join(support_base_dir, class_dir)):
+            # Extract class name from directory name (format: class_id_class_name)
+            try:
+                class_parts = class_dir.split('_', 1)
+                if len(class_parts) > 1:
+                    class_name = class_parts[1]
+                else:
+                    class_name = class_dir
+
+                # Get all images for this class
+                class_path = os.path.join(support_base_dir, class_dir)
+                images = [os.path.join(class_path, f) for f in os.listdir(class_path) 
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+                if images:
+                    support_paths[class_name] = images
+                    print(f"Found {len(images)} support images for class '{class_name}'")
+            except Exception as e:
+                print(f"Error processing class directory {class_dir}: {e}")
+
+    if not support_paths:
+        print("No support images found in the directories")
+        exit(1)
+
+    # Get all query images
+    query_paths = [os.path.join(query_dir, f) for f in os.listdir(query_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    if not query_paths:
+        print("No query images found")
+        exit(1)
+
+    print(f"Found {len(query_paths)} query images")
+
+    # Create output directory for results
+    output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
+                            "results")
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Get predictions without fine-tuning
+    results = predictor.predict(support_paths, query_paths)
+    print("Results without fine-tuning:")
+    for result in results:
+        print(f"Image: {os.path.basename(result['image_path'])}")
+        print(f"Predicted class: {result['predicted_class']}")
+        print(f"Confidence: {result['confidence']:.4f}")
+        print()
+    
+    # Write results to file
+    output_path = os.path.join(output_dir, f"predictions_no_finetune_{timestamp}.txt")
+    write_results_to_file(results, output_path)
+    print(f"Results without fine-tuning saved to: {output_path}")
+
+    # Get predictions with fine-tuning
+    results_finetuned = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
+    print("\nResults with fine-tuning:")
+    for result in results_finetuned:
+        print(f"Image: {os.path.basename(result['image_path'])}")
+        print(f"Predicted class: {result['predicted_class']}")
+        print(f"Confidence: {result['confidence']:.4f}")
+        print()
+    
+    # Write fine-tuned results to file
+    output_path_ft = os.path.join(output_dir, f"predictions_with_finetune_{timestamp}.txt")
+    write_results_to_file(results_finetuned, output_path_ft)
+    print(f"Results with fine-tuning saved to: {output_path_ft}")

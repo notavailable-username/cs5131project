@@ -412,7 +412,7 @@ class YOLOTab(QWidget):
             self.log_output.append(f"- User annotations: {user_annotations}")
             self.log_output.append(f"- Predictions above threshold: {prediction_annotations}")
             self.log_output.append(f"- Total annotations: {user_annotations + prediction_annotations}")
-            self.log_output.append(f"- Dataset saved to: {os.path.dirname(training_dir)}")
+            self.log_output.append(f"- Dataset saved to: {base_dir}")
             
             # Show dialog with statistics
             QMessageBox.information(self, "Training Data Ready", 
@@ -481,7 +481,7 @@ class YOLOTab(QWidget):
             self.toggle_training_controls(True)
             
             # Start training in a thread
-            self.training_thread = TrainingThread(trainer, training_dir, training_output, yolo_config)
+            self.training_thread = TrainingThread(trainer, os.path.join(self.datasets_dir, "yolo"), training_output, yolo_config)
             self.training_thread.progress_update.connect(self.training_progress.setValue)
             self.training_thread.log_update.connect(self.append_to_log)
             self.training_thread.training_complete.connect(self.on_training_complete)

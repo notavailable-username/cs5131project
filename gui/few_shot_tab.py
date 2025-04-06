@@ -116,7 +116,7 @@ class FewShotTab(QWidget):
                             data = json.load(f)
                             results.update(data)
 
-                print("Extracting of results from toggle successful")
+                # print("Extracting of results from toggle successful")
                 if results:
                     current_frame_idx = self.main_window.video_player.get_current_frame_idx()
                     self.load_and_display_predictions(current_frame_idx, results)
@@ -124,16 +124,14 @@ class FewShotTab(QWidget):
                     QMessageBox.warning(self, "No Predictions", "No predictions available.")
 
 
-    def toggle_prediction_view(self):
+    def toggle_prediction_view(self, frame_idx=None):
         """Toggle between showing annotations and predictions"""
+        current_frame = frame_idx if frame_idx is not None else self.main_window.video_player.get_current_frame_idx()
         if self.btn_toggle_view.isChecked():
             self.btn_toggle_view.setText("Show Annotations")
             results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
             # Show predictions if available
-            if hasattr(self, 'fsl_results'):
-                current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-                self.load_and_display_predictions(current_frame_idx, self.fsl_results)
-            elif len(os.listdir(results_dir)) != 0:
+            if len(os.listdir(results_dir)) != 0:
                 # Load predictions from the results directory
                 results = {}
                 for filename in os.listdir(results_dir):
@@ -142,10 +140,9 @@ class FewShotTab(QWidget):
                             data = json.load(f)
                             results.update(data)
 
-                # print("Extracting of results from toggle successful")
+                # print(f"Extracting of results from toggle successful:\n{results}")
                 if results:
-                    current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-                    self.load_and_display_predictions(current_frame_idx, results)
+                    self.load_and_display_predictions(current_frame, results)
                 else:
                     QMessageBox.warning(self, "No Predictions", "No predictions available.")
         else:
@@ -165,29 +162,33 @@ class FewShotTab(QWidget):
             return
 
         frame_h, frame_w = current_frame.shape[:2]
-        predictions = []
 
         # Find predictions for this frame
         frame_key = f"{frame_idx:06d}"  # Match the format used in export
         frame_predictions = results.get(frame_key, {})
-        # print(f"Predictions for {frame_key}: {frame_predictions}")
+        print(f"Predictions for {frame_key}: {frame_predictions}")
 
         # Get threshold value (convert percentage to decimal)
         threshold = self.threshold.value() / 100.0
 
         matching_ann = []
-        for class_idx, predictions in frame_predictions.items():
-            # Find the annotation with matching index in current annotations
-            for ann in self.current_annotations:
-                if str(ann.get('annotation_id', '')) in predictions.keys():
-                    confidence = predictions.get(str(ann.get('annotation_id', '')))
-                    # Only include predictions that meet the threshold
-                    if confidence >= threshold:
-                        match = ann.copy()
-                        match["confidence"] = confidence
-                        matching_ann.append(match)
 
-
+        # Iterate through all classes in the predictions
+        for class_name, class_predictions in frame_predictions.items():
+            # For each class, iterate through all annotation IDs
+            for ann_id, confidence in class_predictions.items():
+                # Only include predictions that meet the threshold
+                if confidence >= threshold:
+                    # Find the annotation with matching index in current annotations
+                    for ann in self.current_annotations:
+                        if str(ann.get('annotation_id', '')) == ann_id:
+                            match = ann.copy()
+                            match["confidence"] = confidence
+                            match["predicted_class"] = class_name  # Add the predicted class
+                            matching_ann.append(match)
+                            break
+        print(f"Matching annotations: {matching_ann}")
+        print()
         # Display predictions in the video player
         self.main_window.video_player.annotate_current_frame(matching_ann, is_prediction=True)
         self.update_prediction_table(matching_ann)
@@ -400,27 +401,31 @@ class FewShotTab(QWidget):
 
         if prev_frame is not None:
             self.request_frame_seek.emit(prev_frame)
-            self.toggle_prediction_view()
+            self.toggle_prediction_view(frame_idx=prev_frame)
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[-1])
-            self.toggle_prediction_view()
-    
+            self.toggle_prediction_view(frame_idx=frame_numbers[-1])
+
     def goto_next_annotated_frame(self):
         if not self.main_window or not self.main_window.current_video_path:
             return
+
         current_frame = self.main_window.video_player.get_current_frame_idx()
         annotations_dir = self.main_window.get_annotations_dir_for_current_video()
         frame_numbers = self.extract_frame_numbers(annotations_dir)
+
         if not frame_numbers:
             QMessageBox.information(self, "No Annotations", "No annotations found for this video.")
             return
+
         next_frame = next((frame for frame in frame_numbers if frame > current_frame), None)
+
         if next_frame is not None:
             self.request_frame_seek.emit(next_frame)
-            self.toggle_prediction_view()
+            self.toggle_prediction_view(frame_idx=next_frame)
         elif frame_numbers:
             self.request_frame_seek.emit(frame_numbers[0])
-            self.toggle_prediction_view()
+            self.toggle_prediction_view(frame_idx=frame_numbers[0])
     
     def load_and_display_annotations(self, frame_idx):
         if not self.main_window or not self.main_window.current_video_path:
@@ -440,7 +445,7 @@ class FewShotTab(QWidget):
         frame_h, frame_w = current_frame.shape[:2]
         annotations = []
         with open(annotation_file, 'r') as f:
-            counter = 1
+            counter = 0
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 5:
@@ -740,7 +745,7 @@ class ExportThread(QThread):
 class TrainFSLThread(QThread):
     """Thread for handling the few-shot learning training process."""
     trainProgress = pyqtSignal(int)
-    trainComplete = pyqtSignal(list)  # List of prediction results
+    trainComplete = pyqtSignal(str)  # List of prediction results
     trainError = pyqtSignal(str)
     
     def __init__(self, support_dir, query_dir, threshold=0.5):
@@ -758,13 +763,19 @@ class TrainFSLThread(QThread):
             # Import here to avoid circular imports
             import sys
             import os
+            import re
             """ current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Current script directory
             models_path = os.path.abspath(os.path.join(current_dir, "models/few_shot_models"))
 
             # Temporarily add to sys.path
             sys.path.insert(0, models_path) """
 
-            # Import the required module
+            from models.few_shot_models.inference import inference
+
+            self.trainProgress.emit(20)
+            output_path = inference()
+            self.trainProgress.emit(100)
+            """ # Import the required module
             from models.few_shot_models.inference import FewShotPredictor, write_results_to_json
 
             import datetime
@@ -823,9 +834,41 @@ class TrainFSLThread(QThread):
                 
             self.trainProgress.emit(40)
             
-            # Get all query images
-            query_paths = [os.path.join(self.query_dir, f) for f in os.listdir(self.query_dir)
-                          if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            # Get all query images and extract frame numbers and annotation indices
+            query_paths = []
+            frame_numbers = []
+            annotation_indices = []
+            
+            for f in os.listdir(self.query_dir):
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    query_path = os.path.join(self.query_dir, f)
+                    
+                    # Extract frame number and annotation index from filename
+                    # Expected format: framenumber_annotationidx.extension
+                    filename = os.path.splitext(f)[0]  # Remove extension
+                    parts = filename.split('_')
+                    
+                    try:
+                        if len(parts) >= 2:
+                            # Keep frame number as string to preserve leading zeros
+                            frame_num = parts[0]
+                            
+                            # For annotation index, convert to int first to remove leading zeros, then back to string
+                            anno_idx = str(int(parts[1]))
+                        else:
+                            # If format doesn't match, use default values
+                            frame_num = str(len(query_paths))
+                            anno_idx = "0"
+                        
+                        query_paths.append(query_path)
+                        frame_numbers.append(frame_num)
+                        annotation_indices.append(anno_idx)
+                    except ValueError:
+                        # If conversion fails, use default values
+                        self.trainError.emit(f"Invalid filename format for {f}. Expected 'framenumber_annotationidx'")
+                        query_paths.append(query_path)
+                        frame_numbers.append(str(len(query_paths) - 1))
+                        annotation_indices.append("0")
             
             if not query_paths:
                 self.trainError.emit("No query images found")
@@ -841,15 +884,19 @@ class TrainFSLThread(QThread):
             
             # Use the fine-tuning option as specified
             self.trainProgress.emit(60)
-            results = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
+            results = predictor.predict(support_paths, query_paths, finetune=False)
+            #Enable finetune
+            # results = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
             
             self.trainProgress.emit(80)
             
             # Write results to file
-            output_path = os.path.join(output_dir, f"predictions_{timestamp}.txt")
-            write_results_to_json(results, output_path)
+            output_path = os.path.join(output_dir, f"predictions_nofinetune_{timestamp}.json")
             
-            self.trainProgress.emit(100)
+            # Use our modified write_results_to_json function with frame numbers and annotation indices
+            write_results_to_json(results, output_path, frame_numbers, annotation_indices)
+            
+            self.trainProgress.emit(100) """
             
             # Signal completion
             self.trainComplete.emit(output_path)

@@ -289,7 +289,7 @@ def write_results_to_file(results: List[Dict], output_path: str):
         
         f.write("=" * 50 + "\n")
 
-def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: Optional[List[int]] = None):
+def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: Optional[List[int]] = None, annotation_indices: Optional[List[str]] = None):
     """
     Write prediction results to a JSON file in a format optimized for processing.
     
@@ -298,9 +298,12 @@ def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: 
         output_path: Path to save the output JSON file
         frame_numbers: Optional list of frame numbers corresponding to each result.
                        If not provided, will use indices as frame numbers.
+        annotation_indices: Optional list of annotation indices corresponding to each result.
+                           If not provided, will use indices as annotation indices.
     """
     import json
     import os
+    import re
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -311,12 +314,16 @@ def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: 
     if frame_numbers is None:
         frame_numbers = list(range(len(results)))
     
-    # Ensure we have the right number of frame numbers
-    if len(frame_numbers) != len(results):
-        raise ValueError(f"Number of frame numbers ({len(frame_numbers)}) doesn't match number of results ({len(results)})")
+    # Use provided annotation indices or default to indices as strings
+    if annotation_indices is None:
+        annotation_indices = [str(i) for i in range(len(results))]
     
-    # Build the JSON structure: frame_number -> annotation_idx -> {class_id: confidence}
-    for idx, (result, frame_num) in enumerate(zip(results, frame_numbers)):
+    # Ensure we have the right number of frame numbers and annotation indices
+    if len(frame_numbers) != len(results) or len(annotation_indices) != len(results):
+        raise ValueError(f"Number of frame numbers ({len(frame_numbers)}) or annotation indices ({len(annotation_indices)}) doesn't match number of results ({len(results)})")
+    
+    # Build the JSON structure: frame_number -> class_name -> {annotation_idx: confidence}
+    for idx, (result, frame_num, anno_idx) in enumerate(zip(results, frame_numbers, annotation_indices)):
         # Convert frame number to string for JSON
         frame_key = str(frame_num)
         
@@ -324,14 +331,21 @@ def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: 
         if frame_key not in json_data:
             json_data[frame_key] = {}
         
-        # Use result index as annotation_idx
-        annotation_idx = str(idx)
-        
-        # Map each class to its confidence
+        # Get all confidences for this result
         class_confidences = result['all_confidences']
         
-        # Store in the nested structure
-        json_data[frame_key][annotation_idx] = class_confidences
+        # For each class and its confidence
+        for class_name, confidence in class_confidences.items():
+            # Initialize class entry if it doesn't exist
+            if class_name not in json_data[frame_key]:
+                json_data[frame_key][class_name] = {}
+            
+            # Add the annotation index and confidence
+            json_data[frame_key][class_name][anno_idx] = confidence
+    
+    # Ensure the output_path has a .json extension
+    if not output_path.endswith('.json'):
+        output_path = os.path.splitext(output_path)[0] + '.json'
     
     # Write to JSON file
     with open(output_path, 'w') as f:
@@ -339,9 +353,8 @@ def write_results_to_json(results: List[Dict], output_path: str, frame_numbers: 
     
     print(f"Results written to JSON file: {output_path}")
 
-
 # Example usage
-if __name__ == "__main__":
+def inference():
     # Example usage of the FewShotPredictor
     # Get the path to model_weights directory (sibling to models directory)
     model_weights_dir = os.path.join(
@@ -399,6 +412,41 @@ if __name__ == "__main__":
     query_paths = [os.path.join(query_dir, f) for f in os.listdir(query_dir)
                   if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
+    query_paths = []
+    frame_numbers = []
+    annotation_indices = []
+    
+    for f in os.listdir(query_dir):  # Changed from self.query_dir to query_dir
+        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+            query_path = os.path.join(query_dir, f)  # Changed from self.query_dir to query_dir
+            
+            # Extract frame number and annotation index from filename
+            # Expected format: framenumber_annotationidx.extension
+            filename = os.path.splitext(f)[0]  # Remove extension
+            parts = filename.split('_')
+            
+            try:
+                if len(parts) >= 2:
+                    # Keep frame number as string to preserve leading zeros
+                    frame_num = parts[0]
+                    
+                    # For annotation index, convert to int first to remove leading zeros, then back to string
+                    anno_idx = str(int(parts[1]))
+                else:
+                    # If format doesn't match, use default values
+                    frame_num = str(len(query_paths))
+                    anno_idx = "0"
+                
+                query_paths.append(query_path)
+                frame_numbers.append(frame_num)
+                annotation_indices.append(anno_idx)
+            except ValueError:
+                # If conversion fails, use default values
+                print(f"Invalid filename format for {f}. Expected 'framenumber_annotationidx'")  # Changed from self.trainError.emit
+                query_paths.append(query_path)
+                frame_numbers.append(str(len(query_paths) - 1))
+                annotation_indices.append("0")
+    
     if not query_paths:
         print("No query images found")
         exit(1)
@@ -416,15 +464,17 @@ if __name__ == "__main__":
     
     # Write results to file
     output_path = os.path.join(output_dir, f"predictions_no_finetune_{timestamp}.json")
-    write_results_to_json(results, output_path)
+    write_results_to_json(results, output_path, frame_numbers, annotation_indices)
     #write_results_to_file(results, output_path)
     print(f"Results without fine-tuning saved to: {output_path}")
+
+    return output_path
     
-    # Get predictions with fine-tuning
+    """ # Get predictions with fine-tuning
     results_finetuned = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
     
     # Write fine-tuned results to file
     output_path_ft = os.path.join(output_dir, f"predictions_with_finetune_{timestamp}.json")
-    write_results_to_json(results, output_path)
+    write_results_to_json(results_finetuned, output_path_ft)
     #write_results_to_file(results_finetuned, output_path_ft)
-    print(f"Results with fine-tuning saved to: {output_path_ft}")
+    print(f"Results with fine-tuning saved to: {output_path_ft}") """

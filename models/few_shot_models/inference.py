@@ -10,8 +10,6 @@ from typing import List, Dict, Tuple, Optional, Union
 import datetime
 
 from models.few_shot_models.models.models import make, load
-import models.few_shot_models.utils as fs_utils  # Rename to avoid conflicts
-import models.few_shot_models.utils.few_shot as fs
 
 class FewShotPredictor:
     """
@@ -108,27 +106,6 @@ class FewShotPredictor:
         """
         print(f"[PREDICT] Starting prediction with {len(support_paths)} classes and {len(query_paths)} query images")
         
-        # Process support images and labels
-        print(f"[PREDICT] Processing support images...")
-        support_images = []
-        support_labels = []
-        class_names = list(support_paths.keys())
-        
-        for class_idx, class_name in enumerate(class_names):
-            print(f"[PREDICT]   - Loading {len(support_paths[class_name])} images for class '{class_name}'")
-            for path in support_paths[class_name]:
-                img = self._load_image(path)
-                support_images.append(img)
-                support_labels.append(class_idx)
-                
-        if not support_images:
-            raise ValueError("No support images provided")
-        
-        # Stack images and convert labels to tensor
-        print(f"[PREDICT] Stacking {len(support_images)} support images and moving to {self.device}")
-        support_images = torch.stack(support_images).to(self.device)
-        support_labels = torch.tensor(support_labels, device=self.device)
-        
         # Process query images
         print(f"[PREDICT] Processing {len(query_paths)} query images...")
         query_images = []
@@ -139,122 +116,128 @@ class FewShotPredictor:
         query_images = torch.stack(query_images).to(self.device)
         print(f"[PREDICT] Query images processed and moved to {self.device}")
         
-        # One-hot encode support labels
+        # Process support images and organize by class
+        print(f"[PREDICT] Processing support images...")
+        class_names = list(support_paths.keys())
         n_way = len(class_names)
-        support_labels_onehot = F.one_hot(support_labels, n_way).float()
         
-        # Make predictions using a single unified approach
+        # Load all support images by class
+        class_tensors = []
+        for class_idx, class_name in enumerate(class_names):
+            print(f"[PREDICT]   - Loading {len(support_paths[class_name])} images for class '{class_name}'")
+            class_images = []
+            for path in support_paths[class_name]:
+                img = self._load_image(path)
+                class_images.append(img)
+            
+            if not class_images:
+                raise ValueError(f"No support images provided for class '{class_name}'")
+                
+            # Stack all images for this class
+            class_tensor = torch.stack(class_images).to(self.device)
+            class_tensors.append(class_tensor)
+        
+        if not class_tensors:
+            raise ValueError("No support images provided")
+        
+        # Instead of duplicating samples in input space, we can:
+        # 1. Process each class separately to get features
+        # 2. Compute prototypes in feature space
+        # 3. Use these prototypes for classification
+        # This approach doesn't work with meta-baseline's expected input format
+        
+        # For meta-baseline, we need consistent shot count. We'll use uniform sampling
+        # to avoid biasing the prototypes toward specific samples
+        shot_counts = [tensor.size(0) for tensor in class_tensors]
+        max_shots = max(shot_counts)
+        min_shots = min(shot_counts)
+        print(f"[PREDICT] Support images per class: min={min_shots}, max={max_shots}")
+        
+        if min_shots != max_shots:
+            print(f"[PREDICT] Balancing support shots across classes using uniform sampling")
+            
+            balanced_tensors = []
+            for tensor in class_tensors:
+                n_shots = tensor.size(0)
+                if n_shots < max_shots:
+                    # Create indices that uniformly sample from available shots
+                    # This ensures every sample is represented as equally as possible
+                    indices = torch.tensor([i % n_shots for i in range(max_shots)], device=self.device)
+                    balanced = tensor[indices]
+                    balanced_tensors.append(balanced)
+                else:
+                    balanced_tensors.append(tensor)
+            
+            x_shot = torch.stack(balanced_tensors)
+        else:
+            # All classes have the same number of shots, no balancing needed
+            x_shot = torch.stack(class_tensors)
+        
+        print(f"[PREDICT] Support images processed into shape {x_shot.shape}")
+        
+        # Make predictions
         with torch.no_grad():
             if finetune:
                 print(f"[PREDICT] Starting fine-tuning for {finetune_steps} steps with learning rate {finetune_lr}...")
-                # Fine-tuning mode: create a working copy of the model
-                model = self.model
                 
-                model = model.to(self.device)
+                # Create a working copy of the model for fine-tuning
+                model = self.model
                 model.train()
                 
-                # Create optimizer
-                if hasattr(model, 'encoder'):
-                    params = [p for p in model.parameters() if p.requires_grad]
-                else:
-                    params = model.parameters()
+                # Create optimizer for the full model
+                optimizer = torch.optim.Adam(model.parameters(), lr=finetune_lr)
                 
-                optimizer = torch.optim.Adam(params, lr=finetune_lr)
-                
-                # Fine-tuning loop
+                # Fine-tuning loop following train_meta.py approach
                 for step in range(finetune_steps):
                     optimizer.zero_grad()
                     
-                    # Extract features
-                    if hasattr(model, 'encoder'):
-                        features = model.encoder(support_images)
+                    # Select subset of query images for this step
+                    n_query_per_class = min(len(query_images) // n_way, min_shots)
+                    total_queries = n_query_per_class * n_way
+                    
+                    # Sample query images
+                    if len(query_images) > total_queries:
+                        idx = torch.randperm(len(query_images))[:total_queries]
+                        train_query = query_images[idx]
                     else:
-                        features = model(support_images)
+                        train_query = query_images
                     
-                    # Compute prototypes
-                    prototypes = fs.compute_prototypes(features, support_labels_onehot)
+                    # Create labels for query images: [0, 0, ..., 1, 1, ..., n_way-1, n_way-1]
+                    # Each class has n_query_per_class examples
+                    query_labels = torch.arange(n_way, device=self.device).repeat_interleave(n_query_per_class)
                     
-                    # Compute logits
-                    temp = model.temp if hasattr(model, 'temp') else 1.0
-                    logits = fs_utils.compute_logits(features, prototypes, 'cos', temp)
-                    
-                    # Compute loss
-                    loss = F.cross_entropy(logits, support_labels)
-                    
-                    # Release graph for manual backward
+                    # Forward pass
                     with torch.set_grad_enabled(True):
+                        # Meta-baseline expects: x_shot [n_way, n_shot, C, H, W], x_query [n_query, C, H, W]
+                        logits = model(x_shot, train_query)
+                        # Reshape logits if needed to be [n_query, n_way]
+                        if len(logits.shape) > 2:
+                            logits = logits.reshape(-1, n_way)
+                        
+                        # Compute loss
+                        loss = F.cross_entropy(logits, query_labels)
                         loss.backward()
                         optimizer.step()
                     
                     if step % 5 == 0:
                         print(f"[PREDICT]   Fine-tuning step {step}/{finetune_steps}, loss: {loss.item():.4f}")
                 
-                # Set model back to evaluation mode
+                # Set model back to evaluation mode after fine-tuning
                 model.eval()
                 print(f"[PREDICT] Fine-tuning completed")
             else:
                 print(f"[PREDICT] Using pre-trained model without fine-tuning")
-                # Non-fine-tuning mode: use the original model
                 model = self.model
             
             # Evaluation/prediction phase
             print(f"[PREDICT] Starting prediction phase...")
             
-            # Special handling for meta-baseline model
-            if self.is_meta_baseline and hasattr(model, 'forward'):
-                print(f"[PREDICT] Using meta-baseline forward pass")
-                # Organize support images by class for meta-baseline's episodic format
-                support_by_class = []
-                for i in range(n_way):
-                    class_images = support_images[support_labels == i]
-                    if len(class_images) > 0:
-                        support_by_class.append(class_images)
-                
-                # Use balanced shots for meta-baseline by taking min shot count per class
-                if len(support_by_class) == n_way:
-                    min_n_shot = min(len(class_examples) for class_examples in support_by_class)
-                    print(f"[PREDICT] Using balanced {min_n_shot}-shot support for meta-baseline")
-                    x_shot = torch.stack([examples[:min_n_shot] for examples in support_by_class])
-                    
-                    # Meta-baseline forward pass with support and query
-                    print(f"[PREDICT] Running meta-baseline forward pass")
-                    logits = model(x_shot, query_images)
-                else:
-                    # Fallback to prototype-based approach if classes are missing
-                    print(f"[PREDICT] Warning: Some classes have no support examples. Using prototype approach instead.")
-                    
-                    if hasattr(model, 'encoder'):
-                        print(f"[PREDICT] Extracting features using encoder")
-                        support_features = model.encoder(support_images)
-                        query_features = model.encoder(query_images)
-                    else:
-                        print(f"[PREDICT] Extracting features using model directly")
-                        support_features = model(support_images)
-                        query_features = model(query_images)
-                    
-                    print(f"[PREDICT] Computing prototypes")
-                    prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
-                    temp = model.temp if hasattr(model, 'temp') else 1.0
-                    print(f"[PREDICT] Computing logits with temperature {temp}")
-                    logits = fs_utils.compute_logits(query_features, prototypes, 'cos', temp)
-            else:
-                print(f"[PREDICT] Using standard feature extraction and prototype-based classification")
-                # Standard feature extraction and prototype-based classification
-                if hasattr(model, 'encoder'):
-                    print(f"[PREDICT] Extracting features using encoder")
-                    support_features = model.encoder(support_images)
-                    query_features = model.encoder(query_images)
-                else:
-                    print(f"[PREDICT] Extracting features using model directly")
-                    support_features = model(support_images)
-                    query_features = model(query_images)
-                
-                print(f"[PREDICT] Computing prototypes")
-                prototypes = fs.compute_prototypes(support_features, support_labels_onehot)
-                temp = model.temp if hasattr(model, 'temp') else 1.0
-                print(f"[PREDICT] Computing logits with temperature {temp}")
-                logits = fs_utils.compute_logits(query_features, prototypes, 'cos', temp)
-                
+            # Run the model's forward pass with support and query images
+            print(f"[PREDICT] Running forward pass with support and query images")
+            logits = model(x_shot, query_images)
+            if len(logits.shape) > 2:
+                logits = logits.reshape(-1, n_way)
+            
             # Apply softmax to get confidence values
             print(f"[PREDICT] Computing probabilities using softmax")
             probabilities = F.softmax(logits, dim=1)

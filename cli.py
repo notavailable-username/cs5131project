@@ -3,7 +3,6 @@ import os
 import yaml
 import cv2
 from models.yolo_trainer import YOLOTrainer
-from models.few_shot import FewShotEnsemble
 from models.motion_detector import MotionDetector
 
 def run_cli(config):
@@ -53,17 +52,6 @@ def run_cli(config):
                         if img is not None:
                             support_examples[class_name].append(img)
                 print(f"Loaded {len(support_examples[class_name])} support examples for class '{class_name}'")
-        
-        # Initialize and train few-shot ensemble
-        few_shot = FewShotEnsemble(confidence_threshold=args.confidence)
-        
-        # Add support examples
-        for class_name, examples in support_examples.items():
-            few_shot.add_support_examples(class_name, examples)
-        
-        # Train models
-        if few_shot.train():
-            print("Few-shot models trained successfully")
             
         # TODO: Add model saving logic if output_dir is provided
     

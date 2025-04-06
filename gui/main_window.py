@@ -17,7 +17,6 @@ from .video_player import VideoPlayer
 from .image_annotator_dialog import ImageAnnotatorDialog
 from .video_loader_dialog import VideoLoaderDialog  # Import the new dialog
 from models.motion_detector import MotionDetector
-from models.few_shot import FewShotEnsemble
 from models.yolo_trainer import YOLOTrainer
 import json
 import csv
@@ -211,7 +210,6 @@ class MainWindow(QMainWindow):
         self.motion_detector = MotionDetector(**md_conf)
         
         fs_conf = config.get("few_shot", {})
-        self.few_shot = FewShotEnsemble(confidence_threshold=fs_conf.get("confidence_threshold", 0.5))
         
         # Data storage - updated to support multiple videos
         self.current_video_path = None

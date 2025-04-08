@@ -586,7 +586,7 @@ class VideoPlayer(QWidget):
         self.current_frame = frame.copy()
         self.set_image(self.current_frame)
     
-    def set_image_with_annotations(self, frame, annotations=None, show_labels=True, is_prediction=False):
+    def set_image_with_annotations(self, frame, annotations=None, show_prediction=False):
         """Set image with optional annotations overlay, with support for selection highlighting"""
         if frame is None:
             return
@@ -599,44 +599,32 @@ class VideoPlayer(QWidget):
             for annotation in annotations:
                 if 'bbox_abs' in annotation:
                     x1, y1, x2, y2 = annotation['bbox_abs']
-                    label = annotation.get('class', '-1')
+                    label = annotation.get('predicted_class', '-1')
                     confidence = annotation.get('confidence', 0.0)
 
                     # Determine color and style based on whether it's a prediction
-                    if is_prediction:
-                        # Prediction styling - green with confidence
-                        color = (0, 255, 0)  # Green for predictions
-                        if confidence > 0:
-                            label_text = f"{label} ({confidence:.1%})"
-                        else:
-                            label_text = label
+                    if show_prediction and annotation.get("is_predicted", False):
+                        color = (255, 0, 0)
+                        label_text = f"{label} ({confidence:.1%})"
+                        cv2.putText(display_frame, label_text, (x1, y1-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                     else:
-                        # Ground truth styling - grey
-                        color = (0, 0, 0)  # Grey for ground truth
-                        label_text = label
+                        color = (0, 0, 0)
                     
                     if annotation.get('selected', False):
                         color = (0, 0, 255)  # Selected boxes in red
                     
                     # Draw bounding box with selection color
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Draw label and confidence only if show_labels is True
-                    if show_labels and label != '-' and label != '-1':
-                        text = f"{label}"
-                        if confidence > 0:
-                            text += f" ({confidence:.2f})"
-                        cv2.putText(display_frame, text, (x1, y1-10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
         # Display the annotated frame
         self.set_image(display_frame)
     
-    def annotate_current_frame(self, annotations, is_prediction=False):
+    def annotate_current_frame(self, annotations, show_prediction=False):
         """Store annotations for current frame and update display"""
         if self.current_frame is not None:
             self.annotations = annotations
-            self.set_image_with_annotations(self.current_frame, self.annotations, is_prediction=is_prediction)
+            self.set_image_with_annotations(self.current_frame, self.annotations, show_prediction=show_prediction)
     
     def clear_annotations(self):
         """Clear annotations and redisplay the current frame"""

@@ -105,9 +105,12 @@ class FewShotTab(QWidget):
         results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
         # Only update view if currently showing predictions
         if self.btn_toggle_view.isChecked():
-            if hasattr(self, 'fsl_results'):
+            current_frame_idx = self.main_window.video_player.get_current_frame_idx()
+            self.load_and_display_annotations(current_frame_idx, show_predictions=True)
+
+            """ if hasattr(self, 'fsl_results'):
                 current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-                self.load_and_display_predictions(current_frame_idx, self.fsl_results)
+                self.load_and_display_annotations(current_frame_idx, show_predictions=True)
             elif len(os.listdir(results_dir)) != 0:
                 results = {}
                 for filename in os.listdir(results_dir):
@@ -121,7 +124,7 @@ class FewShotTab(QWidget):
                     current_frame_idx = self.main_window.video_player.get_current_frame_idx()
                     self.load_and_display_predictions(current_frame_idx, results)
                 else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
+                    QMessageBox.warning(self, "No Predictions", "No predictions available.") """
 
 
     def toggle_prediction_view(self):
@@ -130,7 +133,9 @@ class FewShotTab(QWidget):
         print(f"Current frame: {current_frame}")
         if self.btn_toggle_view.isChecked():
             self.btn_toggle_view.setText("Show Annotations")
-            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+            self.load_and_display_annotations(current_frame, show_predictions=True)
+
+            """ results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
             # Show predictions if available
             if len(os.listdir(results_dir)) != 0:
                 # Load predictions from the results directory
@@ -145,14 +150,13 @@ class FewShotTab(QWidget):
                 if results:
                     self.load_and_display_predictions(current_frame, results)
                 else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
+                    QMessageBox.warning(self, "No Predictions", "No predictions available.") """
         else:
             self.btn_toggle_view.setText("Show Predictions")
             # Show original annotations
             self.load_and_display_annotations(current_frame)
 
-    def load_and_display_predictions(self, frame_idx, results):
-        """Load and display predictions from FSL results for the current frame."""
+    """ def load_and_display_predictions(self, frame_idx, results):
         if not self.main_window or not self.main_window.current_video_path:
             return
 
@@ -191,7 +195,7 @@ class FewShotTab(QWidget):
         print()
         # Display predictions in the video player
         self.main_window.video_player.annotate_current_frame(matching_ann, is_prediction=True)
-        self.update_prediction_table(matching_ann)
+        self.update_prediction_table(matching_ann) """
 
     def update_prediction_table(self, predictions):
         """Update the table to show prediction results."""
@@ -398,38 +402,16 @@ class FewShotTab(QWidget):
             return
 
         prev_frame = next((frame for frame in reversed(frame_numbers) if frame < current_frame), None)
+        # If no previous frame, loop to the last frame
+        if prev_frame is None and frame_numbers:
+            prev_frame = frame_numbers[-1]
 
-        if self.btn_toggle_view.isChecked():
-            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
-            # Show predictions if available
-            if len(os.listdir(results_dir)) != 0:
-                # Load predictions from the results directory
-                results = {}
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
+        if prev_frame is not None:
+            # First, seek to the frame
+            self.request_frame_seek.emit(prev_frame)
 
-                # print(f"Extracting of results from toggle successful:\n{results}")
-                if prev_frame is not None:
-                    self.request_frame_seek.emit(prev_frame)
-                    print(f"Seeking to previous prediction frame: {prev_frame}")
-                    self.load_and_display_predictions(frame_idx=prev_frame, results=results)
-                elif frame_numbers:
-                    self.request_frame_seek.emit(frame_numbers[-1])
-                    self.load_and_display_predictions(frame_idx=frame_numbers[-1], results=results)
-                else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
-        else:
-            if prev_frame is not None:
-                self.request_frame_seek.emit(prev_frame)
-                print(f"Seeking to previous annotated frame: {prev_frame}")
-                self.load_and_display_annotations(frame_idx=prev_frame)
-            elif frame_numbers:
-                self.request_frame_seek.emit(frame_numbers[-1])
-                self.load_and_display_annotations(frame_idx=frame_numbers[-1])
-
+            # Then load and display with the current view mode
+            self.load_and_display_annotations(prev_frame, self.btn_toggle_view.isChecked())
 
     def goto_next_annotated_frame(self):
         if not self.main_window or not self.main_window.current_video_path:
@@ -444,54 +426,53 @@ class FewShotTab(QWidget):
             return
 
         next_frame = next((frame for frame in frame_numbers if frame > current_frame), None)
+        # If no next frame, loop to the first frame
+        if next_frame is None and frame_numbers:
+            next_frame = frame_numbers[0]
 
-        if self.btn_toggle_view.isChecked():
-            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
-            # Show predictions if available
-            if len(os.listdir(results_dir)) != 0:
-                # Load predictions from the results directory
-                results = {}
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
+        if next_frame is not None:
+            # First, seek to the frame
+            self.request_frame_seek.emit(next_frame)
 
-                # print(f"Extracting of results from toggle successful:\n{results}")
-                if next_frame is not None:
-                    self.request_frame_seek.emit(next_frame)
-                    print(f"Seeking to previous prediction frame: {next_frame}")
-                    self.load_and_display_predictions(frame_idx=next_frame, results=results)
-                elif frame_numbers:
-                    self.request_frame_seek.emit(frame_numbers[0])
-                    self.load_and_display_predictions(frame_idx=frame_numbers[0], results=results)
-                else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.")
-        else:
-            if next_frame is not None:
-                self.request_frame_seek.emit(next_frame)
-                print(f"Seeking to previous annotated frame: {next_frame}")
-                self.load_and_display_annotations(frame_idx=next_frame)
-            elif frame_numbers:
-                self.request_frame_seek.emit(frame_numbers[0])
-                self.load_and_display_annotations(frame_idx=frame_numbers[0])
-    
-    def load_and_display_annotations(self, frame_idx):
+            # Then load and display with the current view mode
+            self.load_and_display_annotations(next_frame, self.btn_toggle_view.isChecked())
+
+    def load_and_display_annotations(self, frame_idx, show_predictions=False):
+        """
+        Unified function to load and display frame data (annotations and predictions if available).
+
+        Args:
+            frame_idx: The frame index to load data for
+            show_predictions: If True, overlay prediction data on annotations
+        """
         if not self.main_window or not self.main_window.current_video_path:
             return
-        self.main_window.video_player.set_video_source_type("Annotation View")
+
+        # Set the appropriate view type in the video player
+        view_type = "Prediction View" if show_predictions else "Annotation View"
+        self.main_window.video_player.set_video_source_type(view_type)
+
+        # Get and validate the annotations directory
         annotations_dir = self.main_window.get_annotations_dir_for_current_video()
         if not annotations_dir:
             return
+
+        # Construct the annotation file path
         annotation_file = os.path.join(annotations_dir, f"frame_{frame_idx:06d}.txt")
         if not os.path.exists(annotation_file):
             self.main_window.video_player.clear_annotations()
             self.update_annotation_table([])
+            self.current_annotations = []
             return
+
+        # Get current frame dimensions
         current_frame = self.main_window.video_player.get_current_frame()
         if current_frame is None:
             return
+
         frame_h, frame_w = current_frame.shape[:2]
+
+        # Load annotations
         annotations = []
         with open(annotation_file, 'r') as f:
             counter = 0
@@ -514,9 +495,71 @@ class FewShotTab(QWidget):
                         counter += 1
                     except ValueError:
                         continue
-        self.main_window.video_player.annotate_current_frame(annotations)
-        self.update_annotation_table(annotations)
+                    
+        # Update current annotations
         self.current_annotations = annotations
+
+        # If showing predictions, add prediction data to annotations
+        if show_predictions:
+            # Get prediction results
+            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+            results = {}
+
+            # Check if we have stored results from a previous training session
+            if hasattr(self, 'fsl_results'):
+                results = self.fsl_results
+            # Otherwise try to load from files
+            elif os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
+                for filename in os.listdir(results_dir):
+                    if filename.endswith(".json"):
+                        with open(os.path.join(results_dir, filename), 'r') as f:
+                            data = json.load(f)
+                            results.update(data)
+
+            # Get prediction data for this frame
+            frame_key = f"{frame_idx:06d}"
+            frame_predictions = results.get(frame_key, {})
+            # print(f"Predictions for {frame_key}: {frame_predictions}")
+
+            # Get threshold value
+            threshold = self.threshold.value() / 100.0
+
+            # Add prediction info to annotations
+            for ann in annotations:
+                ann_id = str(ann.get('annotation_id', ''))
+
+                # Find the best prediction for this annotation
+                best_class = None
+                best_confidence = 0.0
+                all_predictions = {}
+
+                for class_name, class_predictions in frame_predictions.items():
+                    if ann_id in class_predictions:
+                        confidence = class_predictions[ann_id]
+                        all_predictions[class_name] = confidence
+                        if confidence > best_confidence:
+                            best_confidence = confidence
+                            best_class = class_name
+
+                # Add prediction data to annotation
+                if best_class and best_confidence >= threshold:
+                    ann["is_predicted"] = True
+                    ann["predicted_class"] = best_class
+                    ann["confidence"] = best_confidence
+                    ann["all_predictions"] = all_predictions
+                else:
+                    ann["is_predicted"] = False
+
+        # print(f"Annotations: \n{annotations}")
+        # print()
+        # Display annotations in the video player
+        self.main_window.video_player.annotate_current_frame(annotations, show_prediction=show_predictions)
+
+        # Update the table (different method based on mode)
+        if show_predictions:
+            self.update_prediction_table(annotations)
+        else:
+            self.update_annotation_table(annotations)
     
     def update_annotation_table(self, annotations):
         self.annotation_table.setRowCount(0)
@@ -537,18 +580,18 @@ class FewShotTab(QWidget):
     def on_annotation_cell_clicked(self, row, column):
         if not self.current_annotations or row >= len(self.current_annotations):
             return
-        
+
         current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-        
+
         # Check if we're in prediction mode or annotation mode
         if self.btn_toggle_view.isChecked():  # Prediction mode
             # Highlight the selected prediction in the video display
             predictions = self.current_annotations.copy()
             for i, pred in enumerate(predictions):
                 pred['selected'] = (i == row)
-            
+
             # Use a different method to highlight predictions or reuse existing with a flag
-            self.main_window.video_player.annotate_current_frame(predictions, is_prediction=True)
+            self.main_window.video_player.annotate_current_frame(predictions, show_prediction=True)
         else:  # Annotation mode - existing behavior
             if column == 0:
                 annotations = self.current_annotations.copy()
@@ -563,10 +606,10 @@ class FewShotTab(QWidget):
                 classes = self.main_window.classes
                 class_id = str(classes.index(selected_class)) if selected_class in classes else selected_class
                 self.current_annotations[row]['class'] = class_id
-                
+
                 # Update table with class name instead of ID
                 self.annotation_table.item(row, 1).setText(selected_class)
-                
+
                 self.main_window.video_player.annotate_current_frame(self.current_annotations)
                 self.save_current_annotations(current_frame_idx)
     

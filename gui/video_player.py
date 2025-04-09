@@ -599,23 +599,41 @@ class VideoPlayer(QWidget):
             for annotation in annotations:
                 if 'bbox_abs' in annotation:
                     x1, y1, x2, y2 = annotation['bbox_abs']
-                    label = annotation.get('predicted_class', '-1')
-                    confidence = annotation.get('confidence', 0.0)
-
-                    # Determine color and style based on whether it's a prediction
+                    
+                    # Determine label and color based on annotation type
                     if show_prediction and annotation.get("is_predicted", False):
-                        color = (255, 0, 0)
-                        label_text = f"{label} ({confidence:.1%})"
-                        cv2.putText(display_frame, label_text, (x1, y1-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        # This is a prediction above threshold
+                        color = (255, 0, 0)  # Red for predictions
+                        predicted_class = annotation.get('predicted_class', '-')
+                        confidence = annotation.get('confidence', 0.0)
+                        label_text = f"{predicted_class} ({confidence:.1%})"
+                    elif annotation.get('is_user_annotated', False):
+                        # This is a user annotation - darker green with blue tint
+                        color = (64, 128, 64)  # Darker green with blue tint in BGR format
+                        
+                        # Get the class name from class_name or translate from class id
+                        if 'class_name' in annotation:
+                            # Use the class_name directly from annotation
+                            label_text = annotation.get('class_name')
+                        else:
+                            # Fallback to using class ID
+                            label_text = annotation.get('class', '-')
                     else:
-                        color = (0, 0, 0)
+                        # This is an unmarked box or below threshold
+                        color = (0, 0, 0)  # Black for unmarked boxes
+                        label_text = None
                     
+                    # Apply selection highlight if selected
                     if annotation.get('selected', False):
-                        color = (0, 0, 255)  # Selected boxes in red
+                        color = (0, 0, 255)  # Blue for selected boxes
                     
-                    # Draw bounding box with selection color
+                    # Draw bounding box
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Draw label if available
+                    if label_text and label_text != '-':
+                        cv2.putText(display_frame, label_text, (x1, y1-10), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
         # Display the annotated frame
         self.set_image(display_frame)
@@ -1221,4 +1239,4 @@ class VideoPlayer(QWidget):
                 if 'cap' in video and video['cap'] is not None:
                     video['cap'].release()
         elif hasattr(self, 'cap') and self.cap is not None:
-            self.cap.release()
+            self.cap.release() 

@@ -108,25 +108,6 @@ class FewShotTab(QWidget):
             current_frame_idx = self.main_window.video_player.get_current_frame_idx()
             self.load_and_display_annotations(current_frame_idx, show_predictions=True)
 
-            """ if hasattr(self, 'fsl_results'):
-                current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-                self.load_and_display_annotations(current_frame_idx, show_predictions=True)
-            elif len(os.listdir(results_dir)) != 0:
-                results = {}
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
-
-                # print("Extracting of results from toggle successful")
-                if results:
-                    current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-                    self.load_and_display_predictions(current_frame_idx, results)
-                else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.") """
-
-
     def toggle_prediction_view(self):
         """Toggle between showing annotations and predictions"""
         current_frame = self.main_window.video_player.get_current_frame_idx()
@@ -134,95 +115,207 @@ class FewShotTab(QWidget):
         if self.btn_toggle_view.isChecked():
             self.btn_toggle_view.setText("Show Annotations")
             self.load_and_display_annotations(current_frame, show_predictions=True)
-
-            """ results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
-            # Show predictions if available
-            if len(os.listdir(results_dir)) != 0:
-                # Load predictions from the results directory
-                results = {}
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
-
-                # print(f"Extracting of results from toggle successful:\n{results}")
-                if results:
-                    self.load_and_display_predictions(current_frame, results)
-                else:
-                    QMessageBox.warning(self, "No Predictions", "No predictions available.") """
         else:
             self.btn_toggle_view.setText("Show Predictions")
             # Show original annotations
             self.load_and_display_annotations(current_frame)
 
-    """ def load_and_display_predictions(self, frame_idx, results):
+    def load_and_display_annotations(self, frame_idx, show_predictions=False):
+        """
+        Unified function to load and display frame data (annotations and predictions if available).
+
+        Args:
+            frame_idx: The frame index to load data for
+            show_predictions: If True, overlay prediction data on annotations
+        """
         if not self.main_window or not self.main_window.current_video_path:
             return
 
-        # Get the current frame for dimensions
+        # Set the appropriate view type in the video player
+        view_type = "Prediction View" if show_predictions else "Annotation View"
+        self.main_window.video_player.set_video_source_type(view_type)
+
+        # Get and validate the annotations directory
+        annotations_dir = self.main_window.get_annotations_dir_for_current_video()
+        if not annotations_dir:
+            return
+
+        # Construct the annotation file path
+        annotation_file = os.path.join(annotations_dir, f"frame_{frame_idx:06d}.txt")
+        if not os.path.exists(annotation_file):
+            self.main_window.video_player.clear_annotations()
+            self.update_annotation_table([])
+            self.current_annotations = []
+            return
+
+        # Get current frame dimensions
         current_frame = self.main_window.video_player.get_current_frame()
         if current_frame is None:
             return
 
         frame_h, frame_w = current_frame.shape[:2]
 
-        # Find predictions for this frame
-        frame_key = f"{frame_idx:06d}"  # Match the format used in export
-        frame_predictions = results.get(frame_key, {})
-        print(f"Predictions for {frame_key}: {frame_predictions}")
+        # Load annotations
+        annotations = []
+        with open(annotation_file, 'r') as f:
+            counter = 0
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    try:
+                        class_id = parts[0]
+                        x_center, y_center, width, height = map(float, parts[1:5])
+                        x1 = int((x_center - width / 2) * frame_w)
+                        y1 = int((y_center - height / 2) * frame_h)
+                        x2 = int((x_center + width / 2) * frame_w)
+                        y2 = int((y_center + height / 2) * frame_h)
+                        
+                        # Create annotation entry with is_user_annotated flag
+                        annotation = {
+                            'bbox_abs': [max(0, x1), max(0, y1), min(frame_w - 1, x2), min(frame_h - 1, y2)],
+                            'class': class_id,
+                            'bbox_yolo': [x_center, y_center, width, height],
+                            'annotation_id': counter,
+                            'is_user_annotated': class_id != '-'  # Flag to identify user-annotated boxes
+                        }
+                        
+                        # Add class_name for display (translate from ID using class_map)
+                        if class_id != '-' and class_id in self.class_map:
+                            annotation['class_name'] = self.class_map.get(class_id, class_id)
+                        
+                        annotations.append(annotation)
+                        counter += 1
+                    except ValueError:
+                        continue
 
-        # Get threshold value (convert percentage to decimal)
-        threshold = self.threshold.value() / 100.0
+        # Update current annotations
+        self.current_annotations = annotations
 
-        matching_ann = []
+        # If showing predictions, add prediction data to annotations
+        if show_predictions:
+            # Get prediction results
+            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+            results = {}
 
-        # Iterate through all classes in the predictions
-        for class_name, class_predictions in frame_predictions.items():
-            # For each class, iterate through all annotation IDs
-            for ann_id, confidence in class_predictions.items():
-                # Only include predictions that meet the threshold
-                if confidence >= threshold:
-                    # Find the annotation with matching index in current annotations
-                    for ann in self.current_annotations:
-                        if str(ann.get('annotation_id', '')) == ann_id:
-                            match = ann.copy()
-                            match["confidence"] = confidence
-                            match["predicted_class"] = class_name  # Add the predicted class
-                            matching_ann.append(match)
-                            break
-        print(f"Matching annotations: {matching_ann}")
-        print()
-        # Display predictions in the video player
-        self.main_window.video_player.annotate_current_frame(matching_ann, is_prediction=True)
-        self.update_prediction_table(matching_ann) """
+            # Check if we have stored results from a previous training session
+            if hasattr(self, 'fsl_results'):
+                results = self.fsl_results
+            # Otherwise try to load from files
+            elif os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
+                for filename in os.listdir(results_dir):
+                    if filename.endswith(".json"):
+                        with open(os.path.join(results_dir, filename), 'r') as f:
+                            data = json.load(f)
+                            results.update(data)
 
+            # Get prediction data for this frame
+            frame_key = f"{frame_idx:06d}"
+            frame_predictions = results.get(frame_key, {})
+
+            # Get threshold value
+            threshold = self.threshold.value() / 100.0
+
+            # Add prediction info to annotations
+            for ann in annotations:
+                ann_id = str(ann.get('annotation_id', ''))
+
+                # Find the best prediction for this annotation
+                best_class = None
+                best_confidence = 0.0
+                all_predictions = {}
+
+                for class_name, class_predictions in frame_predictions.items():
+                    if ann_id in class_predictions:
+                        confidence = class_predictions[ann_id]
+                        all_predictions[class_name] = confidence
+                        if confidence > best_confidence:
+                            best_confidence = confidence
+                            best_class = class_name
+
+                # Add prediction data to annotation
+                if best_class and best_confidence >= threshold:
+                    ann["is_predicted"] = True
+                    ann["predicted_class"] = best_class
+                    ann["confidence"] = best_confidence
+                    ann["all_predictions"] = all_predictions
+                else:
+                    ann["is_predicted"] = False
+
+        # Display annotations in the video player
+        self.main_window.video_player.annotate_current_frame(annotations, show_prediction=show_predictions)
+
+        # Update the table (different method based on mode)
+        if show_predictions:
+            self.update_prediction_table(annotations)
+        else:
+            self.update_annotation_table(annotations)
+
+    def update_annotation_table(self, annotations):
+        self.annotation_table.setRowCount(0)
+        for i, annotation in enumerate(annotations):
+            self.annotation_table.insertRow(i)
+            
+            # Always show "Select" in the select column for annotation mode
+            select_item = QTableWidgetItem("Select")
+            select_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.annotation_table.setItem(i, 0, select_item)
+            
+            # Display class name instead of ID if available
+            class_id = annotation.get('class', '-')
+            class_name = self.class_map.get(class_id, class_id)  # Use ID as fallback if no name found
+            
+            class_item = QTableWidgetItem(class_name)
+            class_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.annotation_table.setItem(i, 1, class_item)
+    
     def update_prediction_table(self, predictions):
         """Update the table to show prediction results."""
         self.annotation_table.setRowCount(0)
 
         for i, prediction in enumerate(predictions):
             self.annotation_table.insertRow(i)
+            
+            # Column 0: Select - Show different values based on annotation type
+            if prediction.get('is_user_annotated', False):
+                # User annotated boxes
+                select_item = QTableWidgetItem("true")
+            elif prediction.get('is_predicted', False) and prediction.get('confidence', 0) >= self.threshold.value() / 100.0:
+                # Predicted boxes above threshold - show confidence
+                confidence_percent = prediction.get('confidence', 0) * 100
+                select_item = QTableWidgetItem(f"{confidence_percent:.1f}%")
+            else:
+                # Boxes below threshold or not predicted
+                select_item = QTableWidgetItem("-")
+                
+            select_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.annotation_table.setItem(i, 0, select_item)
 
-            # Column 0: Select (shows confidence as percentage)
-            confidence_percent = prediction.get('confidence', 0) * 100
-            confidence_item = QTableWidgetItem(f"{confidence_percent:.1f}%")
-            confidence_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            self.annotation_table.setItem(i, 0, confidence_item)
+            # Column 1: Class - Show appropriate class based on annotation type
+            if prediction.get('is_user_annotated', False):
+                # For user annotations, show class (true)
+                class_id = prediction.get('class', '-')
+                class_name = self.class_map.get(class_id, class_id)
+                display_text = f"{class_name} (true)"
+            elif prediction.get('is_predicted', False) and prediction.get('confidence', 0) >= self.threshold.value() / 100.0:
+                # For predictions above threshold, show predicted class
+                pred_class = prediction.get('predicted_class', '-')
+                class_name = self.class_map.get(pred_class, pred_class)
+                display_text = f"{class_name} (predicted)"
+            else:
+                # For boxes below threshold
+                display_text = "-"
 
-            # Column 1: Predicted class (with all predictions as tooltip)
-            class_id = prediction.get('class', 'unknown')
-            class_name = self.class_map.get(class_id, class_id)
+            class_item = QTableWidgetItem(display_text)
 
-            # Create tooltip with all predictions
-            all_preds = prediction.get('all_predictions', {})
-            tooltip_lines = []
-            for pred_class, conf in sorted(all_preds.items(), key=lambda x: x[1], reverse=True):
-                pred_name = self.class_map.get(pred_class, pred_class)
-                tooltip_lines.append(f"{pred_name}: {conf*100:.1f}%")
+            # Create tooltip with all predictions if available
+            if prediction.get('all_predictions'):
+                all_preds = prediction.get('all_predictions', {})
+                tooltip_lines = []
+                for pred_class, conf in sorted(all_preds.items(), key=lambda x: x[1], reverse=True):
+                    pred_name = self.class_map.get(pred_class, pred_class)
+                    tooltip_lines.append(f"{pred_name}: {conf*100:.1f}%")
+                class_item.setToolTip("\n".join(tooltip_lines))
 
-            class_item = QTableWidgetItem(class_name)
-            class_item.setToolTip("\n".join(tooltip_lines))
             class_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
             self.annotation_table.setItem(i, 1, class_item)
 
@@ -314,32 +407,6 @@ class FewShotTab(QWidget):
                 "Error Loading Results",
                 f"Could not load results from {results_path}: {str(e)}"
             )
-        """ # Display results summary in a message box
-        if results:
-            message = "Training complete! Results summary:\n\n"
-
-            # Count how many predictions were above threshold
-            threshold = self.threshold.value() / 100.0
-            above_threshold = sum(1 for r in results if r['confidence'] >= threshold)
-
-            message += f"Total query images: {len(results)}\n"
-            message += f"Predictions above {self.threshold.value()}% confidence: {above_threshold}\n\n"
-
-            # Show top 5 predictions for brevity
-            message += "Top predictions:\n"
-            for i, result in enumerate(sorted(results, key=lambda x: x['confidence'], reverse=True)[:5]):
-                message += f"{i+1}. {os.path.basename(result['image_path'])}: "
-                message += f"{result['predicted_class']} ({result['confidence']:.2%})\n"
-
-            # Add information about where full results are saved
-            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
-            message += f"\nFull results are saved in {output_dir}"
-
-            self.load_and_display_predictions(self.main_window.video_player.get_current_frame_idx(), results)
-
-            QMessageBox.information(self, "Training Results", message)
-        else:
-            QMessageBox.warning(self, "No Results", "Training completed but no results were generated.") """
 
     def _organize_results_by_frame(self, results):
         """Organize the flat results list into a nested dictionary by frame and annotation index."""
@@ -437,146 +504,6 @@ class FewShotTab(QWidget):
             # Then load and display with the current view mode
             self.load_and_display_annotations(next_frame, self.btn_toggle_view.isChecked())
 
-    def load_and_display_annotations(self, frame_idx, show_predictions=False):
-        """
-        Unified function to load and display frame data (annotations and predictions if available).
-
-        Args:
-            frame_idx: The frame index to load data for
-            show_predictions: If True, overlay prediction data on annotations
-        """
-        if not self.main_window or not self.main_window.current_video_path:
-            return
-
-        # Set the appropriate view type in the video player
-        view_type = "Prediction View" if show_predictions else "Annotation View"
-        self.main_window.video_player.set_video_source_type(view_type)
-
-        # Get and validate the annotations directory
-        annotations_dir = self.main_window.get_annotations_dir_for_current_video()
-        if not annotations_dir:
-            return
-
-        # Construct the annotation file path
-        annotation_file = os.path.join(annotations_dir, f"frame_{frame_idx:06d}.txt")
-        if not os.path.exists(annotation_file):
-            self.main_window.video_player.clear_annotations()
-            self.update_annotation_table([])
-            self.current_annotations = []
-            return
-
-        # Get current frame dimensions
-        current_frame = self.main_window.video_player.get_current_frame()
-        if current_frame is None:
-            return
-
-        frame_h, frame_w = current_frame.shape[:2]
-
-        # Load annotations
-        annotations = []
-        with open(annotation_file, 'r') as f:
-            counter = 0
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    try:
-                        class_id = parts[0]
-                        x_center, y_center, width, height = map(float, parts[1:5])
-                        x1 = int((x_center - width / 2) * frame_w)
-                        y1 = int((y_center - height / 2) * frame_h)
-                        x2 = int((x_center + width / 2) * frame_w)
-                        y2 = int((y_center + height / 2) * frame_h)
-                        annotations.append({
-                            'bbox_abs': [max(0, x1), max(0, y1), min(frame_w - 1, x2), min(frame_h - 1, y2)],
-                            'class': class_id,
-                            'bbox_yolo': [x_center, y_center, width, height],
-                            'annotation_id': counter
-                        })
-                        counter += 1
-                    except ValueError:
-                        continue
-                    
-        # Update current annotations
-        self.current_annotations = annotations
-
-        # If showing predictions, add prediction data to annotations
-        if show_predictions:
-            # Get prediction results
-            results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
-            results = {}
-
-            # Check if we have stored results from a previous training session
-            if hasattr(self, 'fsl_results'):
-                results = self.fsl_results
-            # Otherwise try to load from files
-            elif os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
-
-            # Get prediction data for this frame
-            frame_key = f"{frame_idx:06d}"
-            frame_predictions = results.get(frame_key, {})
-            # print(f"Predictions for {frame_key}: {frame_predictions}")
-
-            # Get threshold value
-            threshold = self.threshold.value() / 100.0
-
-            # Add prediction info to annotations
-            for ann in annotations:
-                ann_id = str(ann.get('annotation_id', ''))
-
-                # Find the best prediction for this annotation
-                best_class = None
-                best_confidence = 0.0
-                all_predictions = {}
-
-                for class_name, class_predictions in frame_predictions.items():
-                    if ann_id in class_predictions:
-                        confidence = class_predictions[ann_id]
-                        all_predictions[class_name] = confidence
-                        if confidence > best_confidence:
-                            best_confidence = confidence
-                            best_class = class_name
-
-                # Add prediction data to annotation
-                if best_class and best_confidence >= threshold:
-                    ann["is_predicted"] = True
-                    ann["predicted_class"] = best_class
-                    ann["confidence"] = best_confidence
-                    ann["all_predictions"] = all_predictions
-                else:
-                    ann["is_predicted"] = False
-
-        # print(f"Annotations: \n{annotations}")
-        # print()
-        # Display annotations in the video player
-        self.main_window.video_player.annotate_current_frame(annotations, show_prediction=show_predictions)
-
-        # Update the table (different method based on mode)
-        if show_predictions:
-            self.update_prediction_table(annotations)
-        else:
-            self.update_annotation_table(annotations)
-    
-    def update_annotation_table(self, annotations):
-        self.annotation_table.setRowCount(0)
-        for i, annotation in enumerate(annotations):
-            self.annotation_table.insertRow(i)
-            select_item = QTableWidgetItem("Select")
-            select_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            self.annotation_table.setItem(i, 0, select_item)
-            
-            # Display class name instead of ID if available
-            class_id = annotation.get('class', '-')
-            class_name = self.class_map.get(class_id, class_id)  # Use ID as fallback if no name found
-            
-            class_item = QTableWidgetItem(class_name)
-            class_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            self.annotation_table.setItem(i, 1, class_item)
-    
     def on_annotation_cell_clicked(self, row, column):
         if not self.current_annotations or row >= len(self.current_annotations):
             return
@@ -868,143 +795,15 @@ class TrainFSLThread(QThread):
             import sys
             import os
             import re
-            """ current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Current script directory
-            models_path = os.path.abspath(os.path.join(current_dir, "models/few_shot_models"))
-
-            # Temporarily add to sys.path
-            sys.path.insert(0, models_path) """
-
             from models.few_shot_models.inference import inference
 
             self.trainProgress.emit(20)
             output_path = inference()
             self.trainProgress.emit(100)
-            """ # Import the required module
-            from models.few_shot_models.inference import FewShotPredictor, write_results_to_json
-
-            import datetime
-            
-            print("passed import")
-            # Set up progress reporting
-            self.trainProgress.emit(10)
-            
-            # Get model weights path
-            model_weights_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                "models/few_shot_models/save"
-            )
-            checkpoint_path = os.path.join(
-                model_weights_dir, 
-                "meta_mini-imagenet-1shot_meta-baseline-resnet12-max-va.pth"
-            )
-            
-            if not os.path.exists(checkpoint_path):
-                self.trainError.emit(f"Model checkpoint not found at: {checkpoint_path}")
-                return
-                
-            self.trainProgress.emit(20)
-            
-            # Initialize predictor
-            predictor = FewShotPredictor(checkpoint_path=checkpoint_path)
-            
-            self.trainProgress.emit(30)
-            
-            # Prepare support paths dictionary
-            support_paths = {}
-            for class_dir in os.listdir(self.support_dir):
-                if os.path.isdir(os.path.join(self.support_dir, class_dir)):
-                    # Extract class name from directory name (format: class_id_class_name)
-                    try:
-                        class_parts = class_dir.split('_', 1)
-                        if len(class_parts) > 1:
-                            class_name = class_parts[1]
-                        else:
-                            class_name = class_dir
-                            
-                        # Get all images for this class
-                        class_path = os.path.join(self.support_dir, class_dir)
-                        images = [os.path.join(class_path, f) for f in os.listdir(class_path) 
-                                if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                        
-                        if images:
-                            support_paths[class_name] = images
-                    except Exception as e:
-                        self.trainError.emit(f"Error processing class directory {class_dir}: {str(e)}")
-                        return
-            
-            if not support_paths:
-                self.trainError.emit("No support images found in the directories")
-                return
-                
-            self.trainProgress.emit(40)
-            
-            # Get all query images and extract frame numbers and annotation indices
-            query_paths = []
-            frame_numbers = []
-            annotation_indices = []
-            
-            for f in os.listdir(self.query_dir):
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    query_path = os.path.join(self.query_dir, f)
-                    
-                    # Extract frame number and annotation index from filename
-                    # Expected format: framenumber_annotationidx.extension
-                    filename = os.path.splitext(f)[0]  # Remove extension
-                    parts = filename.split('_')
-                    
-                    try:
-                        if len(parts) >= 2:
-                            # Keep frame number as string to preserve leading zeros
-                            frame_num = parts[0]
-                            
-                            # For annotation index, convert to int first to remove leading zeros, then back to string
-                            anno_idx = str(int(parts[1]))
-                        else:
-                            # If format doesn't match, use default values
-                            frame_num = str(len(query_paths))
-                            anno_idx = "0"
-                        
-                        query_paths.append(query_path)
-                        frame_numbers.append(frame_num)
-                        annotation_indices.append(anno_idx)
-                    except ValueError:
-                        # If conversion fails, use default values
-                        self.trainError.emit(f"Invalid filename format for {f}. Expected 'framenumber_annotationidx'")
-                        query_paths.append(query_path)
-                        frame_numbers.append(str(len(query_paths) - 1))
-                        annotation_indices.append("0")
-            
-            if not query_paths:
-                self.trainError.emit("No query images found")
-                return
-                
-            self.trainProgress.emit(50)
-            
-            # Create output directory for results
-            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                     "results/")
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Use the fine-tuning option as specified
-            self.trainProgress.emit(60)
-            results = predictor.predict(support_paths, query_paths, finetune=False)
-            #Enable finetune
-            # results = predictor.predict(support_paths, query_paths, finetune=True, finetune_steps=20, finetune_lr=0.01)
-            
-            self.trainProgress.emit(80)
-            
-            # Write results to file
-            output_path = os.path.join(output_dir, f"predictions_nofinetune_{timestamp}.json")
-            
-            # Use our modified write_results_to_json function with frame numbers and annotation indices
-            write_results_to_json(results, output_path, frame_numbers, annotation_indices)
-            
-            self.trainProgress.emit(100) """
             
             # Signal completion
             self.trainComplete.emit(output_path)
             
         except Exception as e:
             print(f"Training error: {str(e)}")
-            self.trainError.emit(f"Training error: {str(e)}")
+            self.trainError.emit(f"Training error: {str(e)}") 

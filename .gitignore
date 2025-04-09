@@ -2,6 +2,13 @@
 /datasets/
 results/
 
+# Ignore yolo model weights
+yolo11n.pt
+yolo11s.pt
+yolo11m.pt
+yolo11l.pt
+yolo11x.pt
+
 # Python
 __pycache__/
 *.py[cod]

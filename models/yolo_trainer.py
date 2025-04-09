@@ -49,21 +49,21 @@ class YOLOTrainer:
         # Get appropriate model path
         if self.model_type.startswith("YOLOv11"):
             variant = self.model_type[-1].lower()  # Extract size variant (n, s, m, l, x)
-            self.model_path = f"yolov11{variant}"
+            self.model_path = f"yolo11{variant}.pt"  # YOLO11 doesn't use 'v' in its path
         elif self.model_type.startswith("YOLOv10"):
             variant = self.model_type[-1].lower()  # Extract size variant
-            self.model_path = f"yolov10{variant}"
+            self.model_path = f"yolov10{variant}.pt"
         elif self.model_type.startswith("YOLOv9"):
             variant = self.model_type[-1].lower()  # Extract size variant
             if variant == 'c':  # Special case for YOLOv9c
-                self.model_path = "yolov9c"
+                self.model_path = "yolov9c.pt"
             elif variant == 'e':  # Special case for YOLOv9e
-                self.model_path = "yolov9e"
+                self.model_path = "yolov9e.pt"
             else:
-                self.model_path = f"yolov9{variant}"
+                self.model_path = f"yolov9{variant}.pt"
         else:
             # Handle YOLOv8 variants
-            self.model_path = self.model_type.lower()
+            self.model_path = f"{self.model_type.lower()}.pt"
     
     def train(self):
         """Train the YOLO model using the provided configuration"""

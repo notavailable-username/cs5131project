@@ -10,6 +10,7 @@ import cv2
 import json
 import numpy as np
 import shutil
+import random  # Add import for random sampling
 from models.yolo_trainer import YOLOTrainer  # Import the actual trainer
 
 class AugmentationSettingsDialog(QDialog):
@@ -395,6 +396,13 @@ class YOLOTab(QWidget):
         self.threshold_input.setToolTip("Only include predictions with confidence above this threshold")
         settings_layout.addRow("Confidence Threshold:", self.threshold_input)
         
+        # Add input for empty frames
+        self.empty_frames_input = QSpinBox()
+        self.empty_frames_input.setRange(0, 500)
+        self.empty_frames_input.setValue(0)
+        self.empty_frames_input.setToolTip("Number of random frames without annotations to include in training")
+        settings_layout.addRow("Empty Frames:", self.empty_frames_input)
+        
         # Augmentation options with layout
         aug_layout = QHBoxLayout()
         self.augmentation_check = QCheckBox("Enable Data Augmentation")
@@ -676,6 +684,9 @@ class YOLOTab(QWidget):
                     if pred_class.lower() == class_name.lower():
                         class_map[pred_class] = idx
             
+            # Track frames that have been used (will be populated during processing)
+            used_frames = set()
+            
             # Process each frame with annotations
             for i, annotation_file in enumerate(annotation_files):
                 # Update progress dialog
@@ -687,6 +698,7 @@ class YOLOTab(QWidget):
                 
                 # Extract frame number from filename
                 frame_idx = int(annotation_file.replace("frame_", "").replace(".txt", ""))
+                used_frames.add(frame_idx)  # Track this frame as used
                 formatted_frame_number = f"{frame_idx:06d}"
                 
                 # Read in the annotations
@@ -807,8 +819,70 @@ class YOLOTab(QWidget):
                 
                 total_annotations = user_annotations + prediction_annotations
             
-            # Close the progress dialog
-            progress_dialog.setValue(len(annotation_files))
+            # Close progress dialog before showing results
+            progress_dialog.close()
+            
+            # Add empty frames if requested
+            num_empty_frames = self.empty_frames_input.value()
+            empty_frames_added = 0
+            
+            if num_empty_frames > 0:
+                self.log_output.append(f"Adding {num_empty_frames} frames without annotations...")
+                
+                # Get total frame count in video
+                total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                
+                # Get available frames (frames without annotations)
+                available_frames = list(set(range(total_video_frames)) - used_frames)
+                
+                # Make sure we don't try to sample more frames than available
+                num_to_sample = min(num_empty_frames, len(available_frames))
+                
+                if num_to_sample > 0 and available_frames:
+                    # Randomly sample frames
+                    selected_frames = random.sample(available_frames, num_to_sample)
+                    
+                    # Create a progress dialog for this operation
+                    empty_progress = QProgressDialog("Adding empty frames...", "Cancel", 0, num_to_sample, self)
+                    empty_progress.setWindowTitle("Adding Empty Frames")
+                    empty_progress.setWindowModality(Qt.WindowModality.WindowModal)
+                    empty_progress.setMinimumDuration(0)
+                    
+                    # Process each selected frame
+                    for i, frame_idx in enumerate(selected_frames):
+                        # Update progress
+                        empty_progress.setValue(i)
+                        if empty_progress.wasCanceled():
+                            self.log_output.append("Adding empty frames canceled by user.")
+                            break
+                            
+                        try:
+                            # Get the frame from video
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            ret, frame = cap.read()
+                            if not ret:
+                                continue
+                                
+                            # Save the frame as image
+                            formatted_frame_number = f"{frame_idx:06d}"
+                            img_path = os.path.join(images_dir, f"{video_name}_{formatted_frame_number}.jpg")
+                            cv2.imwrite(img_path, frame)
+                            
+                            # Create empty annotation file
+                            label_path = os.path.join(labels_dir, f"{video_name}_{formatted_frame_number}.txt")
+                            with open(label_path, 'w') as f:
+                                pass  # Create empty file
+                            
+                            empty_frames_added += 1
+                        except Exception as e:
+                            self.log_output.append(f"Error processing empty frame {frame_idx}: {str(e)}")
+                    
+                    # Close progress dialog
+                    empty_progress.setValue(num_to_sample)
+                    empty_progress.close()  # Explicitly close the dialog
+                    
+                else:
+                    self.log_output.append("No frames available for empty frame sampling.")
             
             cap.release()
             
@@ -832,9 +906,14 @@ class YOLOTab(QWidget):
                 self.log_output.append("Generating additional training data with random cropping...")
                 self._generate_random_crops(images_dir, labels_dir)
             
+            # Calculate total frames in dataset
+            total_dataset_frames = total_frames + empty_frames_added
+            
             # Show statistics
             self.log_output.append(f"Training data preparation complete:")
-            self.log_output.append(f"- Total frames: {total_frames}")
+            self.log_output.append(f"- Total frames in dataset: {total_dataset_frames}")
+            self.log_output.append(f"- Frames with annotations: {total_frames}")
+            self.log_output.append(f"- Empty frames added: {empty_frames_added}")
             self.log_output.append(f"- User annotations: {user_annotations}")
             self.log_output.append(f"- Predictions above threshold: {prediction_annotations}")
             if skipped_below_threshold > 0:
@@ -845,7 +924,9 @@ class YOLOTab(QWidget):
             # Show dialog with statistics
             QMessageBox.information(self, "Training Data Ready", 
                 f"Training data prepared successfully!\n\n"
-                f"Total frames: {total_frames}\n"
+                f"Total frames in dataset: {total_dataset_frames}\n"
+                f"Frames with annotations: {total_frames}\n"
+                f"Empty frames added: {empty_frames_added}\n"
                 f"User annotations: {user_annotations}\n"
                 f"Predictions above {self.threshold_input.value()}% threshold: {prediction_annotations}\n"
                 f"Predictions below threshold (skipped): {skipped_below_threshold}\n"
@@ -854,6 +935,10 @@ class YOLOTab(QWidget):
             return True
             
         except Exception as e:
+            # Close progress dialogs in case of error
+            if 'progress_dialog' in locals():
+                progress_dialog.close()
+            
             import traceback
             self.log_output.append(f"Error preparing training data: {str(e)}")
             self.log_output.append(traceback.format_exc())

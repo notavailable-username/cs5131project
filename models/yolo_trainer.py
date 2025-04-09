@@ -1,9 +1,10 @@
 from ultralytics import YOLO
 import os
 import yaml
+import numpy as np
 
 class YOLOTrainer:
-    """YOLO model trainer with support for YOLOv8 and YOLOv11"""
+    """YOLO model trainer with support for YOLOv8, YOLOv9, YOLOv10 and YOLOv11"""
     
     def __init__(self, config):
         """
@@ -21,7 +22,7 @@ class YOLOTrainer:
                 - dataset_yaml: Path to dataset.yaml
                 - output_dir: Directory to save training outputs
         """
-        self.model_type = config.get("model_type", "YOLOv11")
+        self.model_type = config.get("model_type", "YOLOv11n")
         self.epochs = config.get("epochs", 50)
         self.batch_size = config.get("batch_size", 16)
         self.img_size = config.get("img_size", 640)
@@ -31,17 +32,35 @@ class YOLOTrainer:
         self.dataset_yaml = config.get("dataset_yaml", None)
         self.output_dir = config.get("output_dir", None)
         
+        # Augmentation settings
+        self.mosaic = config.get("mosaic", 1.0)
+        self.mixup = config.get("mixup", 0.1)
+        self.degrees = config.get("degrees", 0.0)
+        self.translate = config.get("translate", 0.1)
+        self.scale = config.get("scale", 0.5)
+        self.shear = config.get("shear", 0.0)
+        self.perspective = config.get("perspective", 0.0)
+        self.flipud = config.get("flipud", 0.0)
+        self.fliplr = config.get("fliplr", 0.5)
+        self.hsv_h = config.get("hsv_h", 0.015)
+        self.hsv_s = config.get("hsv_s", 0.7)
+        self.hsv_v = config.get("hsv_v", 0.4)
+        
         # Get appropriate model path
         if self.model_type.startswith("YOLOv11"):
-            self.model_path = "yolov11n"  # Use YOLOv11 nano by default
-            if "YOLOv11s" in self.model_type:
-                self.model_path = "yolov11s"
-            elif "YOLOv11m" in self.model_type:
-                self.model_path = "yolov11m"
-            elif "YOLOv11l" in self.model_type:
-                self.model_path = "yolov11l"
-            elif "YOLOv11x" in self.model_type:
-                self.model_path = "yolov11x"
+            variant = self.model_type[-1].lower()  # Extract size variant (n, s, m, l, x)
+            self.model_path = f"yolov11{variant}"
+        elif self.model_type.startswith("YOLOv10"):
+            variant = self.model_type[-1].lower()  # Extract size variant
+            self.model_path = f"yolov10{variant}"
+        elif self.model_type.startswith("YOLOv9"):
+            variant = self.model_type[-1].lower()  # Extract size variant
+            if variant == 'c':  # Special case for YOLOv9c
+                self.model_path = "yolov9c"
+            elif variant == 'e':  # Special case for YOLOv9e
+                self.model_path = "yolov9e"
+            else:
+                self.model_path = f"yolov9{variant}"
         else:
             # Handle YOLOv8 variants
             self.model_path = self.model_type.lower()
@@ -63,6 +82,7 @@ class YOLOTrainer:
                 'project': os.path.dirname(self.output_dir) if self.output_dir else None,
                 'name': os.path.basename(self.output_dir) if self.output_dir else None,
                 'exist_ok': True,
+                'verbose': True,  # Enable verbose output for better logging
             }
             
             # Configure aspect ratio preservation
@@ -70,7 +90,21 @@ class YOLOTrainer:
                 train_args['rect'] = True  # Use rectangular training with aspect ratio preservation
             
             # Configure data augmentation
-            if not self.use_augmentation:
+            if self.use_augmentation:
+                # Set all augmentation parameters from config
+                train_args['mosaic'] = self.mosaic
+                train_args['mixup'] = self.mixup
+                train_args['degrees'] = self.degrees
+                train_args['translate'] = self.translate
+                train_args['scale'] = self.scale
+                train_args['shear'] = self.shear
+                train_args['perspective'] = self.perspective
+                train_args['flipud'] = self.flipud
+                train_args['fliplr'] = self.fliplr
+                train_args['hsv_h'] = self.hsv_h
+                train_args['hsv_s'] = self.hsv_s
+                train_args['hsv_v'] = self.hsv_v
+            else:
                 # Disable augmentation techniques
                 train_args['augment'] = False
                 train_args['mosaic'] = 0.0
@@ -134,7 +168,7 @@ class TrainingThread:
 if __name__ == "__main__":
     # Example usage
     config = {
-        "model_type": "YOLOv11",
+        "model_type": "YOLOv11n",
         "epochs": 10,
         "batch_size": 8,
         "img_size": 640,

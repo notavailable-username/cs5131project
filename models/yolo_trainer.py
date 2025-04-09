@@ -166,18 +166,85 @@ class TrainingThread:
             }
 
 if __name__ == "__main__":
-    # Example usage
+    import argparse
+    
+    # Create argument parser
+    parser = argparse.ArgumentParser(description="YOLO Model Trainer")
+    
+    # Add arguments for common training parameters
+    parser.add_argument("--model", type=str, default="YOLOv11n", help="Model type (YOLOv8n, YOLOv9c, YOLOv10n, YOLOv11n, etc.)")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
+    parser.add_argument("--img-size", type=int, default=640, help="Input image size")
+    parser.add_argument("--patience", type=int, default=20, help="Early stopping patience")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to dataset.yaml file")
+    parser.add_argument("--output", type=str, required=True, help="Output directory for trained model")
+    parser.add_argument("--no-augmentation", action="store_true", help="Disable data augmentation")
+    parser.add_argument("--no-aspect-ratio", action="store_true", help="Disable aspect ratio preservation")
+    
+    # Add augmentation parameters
+    parser.add_argument("--mosaic", type=float, default=1.0, help="Mosaic augmentation (0.0-1.0)")
+    parser.add_argument("--mixup", type=float, default=0.1, help="Mixup augmentation (0.0-1.0)")
+    parser.add_argument("--degrees", type=float, default=0.0, help="Rotation augmentation degrees")
+    parser.add_argument("--translate", type=float, default=0.1, help="Translation augmentation")
+    parser.add_argument("--scale", type=float, default=0.5, help="Scale augmentation")
+    parser.add_argument("--shear", type=float, default=0.0, help="Shear augmentation")
+    parser.add_argument("--perspective", type=float, default=0.0, help="Perspective augmentation")
+    parser.add_argument("--flipud", type=float, default=0.0, help="Flip up/down probability")
+    parser.add_argument("--fliplr", type=float, default=0.5, help="Flip left/right probability")
+    parser.add_argument("--hsv-h", type=float, default=0.015, help="HSV hue augmentation")
+    parser.add_argument("--hsv-s", type=float, default=0.7, help="HSV saturation augmentation")
+    parser.add_argument("--hsv-v", type=float, default=0.4, help="HSV value augmentation")
+    parser.add_argument("--device", type=str, default="", help="Device to run on (cpu, 0, 0,1,2,3, etc.)")
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Create configuration from arguments
     config = {
-        "model_type": "YOLOv11n",
-        "epochs": 10,
-        "batch_size": 8,
-        "img_size": 640,
-        "patience": 15,
-        "augmentation": True,
-        "preserve_aspect_ratio": True,
-        "dataset_yaml": "path/to/dataset.yaml",
-        "output_dir": "path/to/output"
+        "model_type": args.model,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "img_size": args.img_size,
+        "patience": args.patience,
+        "augmentation": not args.no_augmentation,
+        "preserve_aspect_ratio": not args.no_aspect_ratio,
+        "dataset_yaml": args.dataset,
+        "output_dir": args.output,
+        
+        # Augmentation settings
+        "mosaic": args.mosaic,
+        "mixup": args.mixup,
+        "degrees": args.degrees,
+        "translate": args.translate,
+        "scale": args.scale,
+        "shear": args.shear,
+        "perspective": args.perspective,
+        "flipud": args.flipud,
+        "fliplr": args.fliplr,
+        "hsv_h": args.hsv_h,
+        "hsv_s": args.hsv_s,
+        "hsv_v": args.hsv_v
     }
+    
+    # Add device if specified
+    if args.device:
+        config["device"] = args.device
+    
+    print(f"Starting YOLO training with {args.model} model...")
+    print(f"Dataset: {args.dataset}")
+    print(f"Output directory: {args.output}")
+    print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}, Image size: {args.img_size}")
+    print(f"Augmentation enabled: {not args.no_augmentation}")
+    
+    # Create trainer and run training
     trainer = YOLOTrainer(config)
     results = trainer.train()
-    print(results)
+    
+    # Print results
+    if results["success"]:
+        print(f"\nTraining completed successfully!")
+        print(f"Model saved to: {results.get('model_path', 'unknown')}")
+        print(f"mAP: {results.get('mAP', 0):.4f}")
+    else:
+        print(f"\nTraining failed: {results.get('error', 'unknown error')}")

@@ -671,13 +671,7 @@ class YOLOTab(QWidget):
                 class_name_to_idx = {class_name.lower(): i for i, class_name in enumerate(self.parent.classes)}
                 
             # Map class names from predictions file to our class indices
-            # This handles if prediction file has different class names than our current project
-            class_map = {
-                'princess': 0,      # Default mappings - update as needed
-                'goblin_barrel': 1,
-                'furnace': 2
-            }
-            
+            class_map = {}
             # Override with actual class indices if available
             for class_name, idx in class_name_to_idx.items():
                 for pred_class in class_map.keys():

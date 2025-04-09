@@ -581,8 +581,8 @@ class YOLOTab(QWidget):
         # Create proper YOLO directory structure
         video_name = self.get_video_name()
         base_dir = os.path.join(self.datasets_dir, "yolo")
-        images_dir = os.path.join(base_dir, "train", "images")
-        labels_dir = os.path.join(base_dir, "train", "labels")
+        images_dir = os.path.join(base_dir, "images", "train")  # Updated path
+        labels_dir = os.path.join(base_dir, "labels", "train")  # Updated path
         config_dir = os.path.join(base_dir, "config")
         
         # Create directories
@@ -890,8 +890,8 @@ class YOLOTab(QWidget):
             dataset_yaml = os.path.join(config_dir, "dataset.yaml")
             with open(dataset_yaml, 'w') as f:
                 f.write(f"path: {base_dir}\n")
-                f.write(f"train: train/images\n")  # Updated path
-                f.write(f"val: train/images\n")    # Updated path
+                f.write(f"train: images/train\n")  # Updated path
+                f.write(f"val: images/train\n")    # Updated path
                 f.write(f"nc: {len(self.parent.classes)}\n")
                 f.write(f"names: {self.parent.classes}\n")
             
@@ -1069,8 +1069,8 @@ class YOLOTab(QWidget):
             return
         
         video_name = self.get_video_name()
-        images_dir = os.path.join(self.datasets_dir, "yolo", "train", "images")
-        labels_dir = os.path.join(self.datasets_dir, "yolo", "train", "labels")
+        images_dir = os.path.join(self.datasets_dir, "yolo", "images", "train")  # Updated path
+        labels_dir = os.path.join(self.datasets_dir, "yolo", "labels", "train")  # Updated path
         
         # Check if training data exists
         if not os.path.exists(images_dir) or not os.listdir(images_dir) or not os.path.exists(labels_dir) or not os.listdir(labels_dir):

@@ -200,13 +200,22 @@ class FewShotTab(QWidget):
             # Check if we have stored results from a previous training session
             if hasattr(self, 'fsl_results'):
                 results = self.fsl_results
-            # Otherwise try to load from files
+            # Otherwise try to load from the most recent JSON file
             elif os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
-                for filename in os.listdir(results_dir):
-                    if filename.endswith(".json"):
-                        with open(os.path.join(results_dir, filename), 'r') as f:
-                            data = json.load(f)
-                            results.update(data)
+                # Find all JSON files in the results directory
+                json_files = [f for f in os.listdir(results_dir) if f.endswith(".json")]
+                
+                if json_files:
+                    # Sort files by modification time, most recent first
+                    latest_json = max(
+                        json_files, 
+                        key=lambda f: os.path.getmtime(os.path.join(results_dir, f))
+                    )
+                    
+                    # Load only the most recent file
+                    with open(os.path.join(results_dir, latest_json), 'r') as f:
+                        results = json.load(f)
+                        print(f"Loaded latest predictions from: {latest_json}")
 
             # Get prediction data for this frame
             frame_key = f"{frame_idx:06d}"
@@ -806,4 +815,4 @@ class TrainFSLThread(QThread):
             
         except Exception as e:
             print(f"Training error: {str(e)}")
-            self.trainError.emit(f"Training error: {str(e)}") 
+            self.trainError.emit(f"Training error: {str(e)}")

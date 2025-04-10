@@ -1007,7 +1007,7 @@ class MainWindow(QMainWindow):
             frame_annotations.append(annotation)
         
         # Use the video player to display the frame with annotations, but don't show labels
-        self.video_player.set_image_with_annotations(frame, frame_annotations, show_labels=False)
+        self.video_player.set_image_with_annotations(frame, frame_annotations, show_prediction=False)
     
     def handle_motion_detection_complete(self, all_detections):
         """Handle the completion of motion detection without few-shot classification"""

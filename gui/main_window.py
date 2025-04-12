@@ -524,6 +524,9 @@ class MainWindow(QMainWindow):
             self.detection_threshold.setEnabled(has_video)
         if hasattr(self, 'frame_interval'):
             self.frame_interval.setEnabled(has_video)
+        if hasattr(self, "history_length"):
+            self.history_length.setEnabled(has_video)
+
             
         # Update few-shot tab controls
         if hasattr(self, 'class_selector'):
@@ -558,6 +561,12 @@ class MainWindow(QMainWindow):
         self.frame_interval.setText("2")  # Default 2 fps processing
         self.frame_interval.setToolTip("Higher values process more frames but take longer")
         settings_layout.addWidget(self.frame_interval)
+
+        settings_layout.addWidget(QLabel("History Length (frames):"))
+        self.history_length = QLineEdit()
+        self.history_length.setText("500")  # Default history value
+        self.history_length.setToolTip("Lower values make detector adapt more quickly to scene changes")
+        settings_layout.addWidget(self.history_length)
         
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -792,6 +801,7 @@ class MainWindow(QMainWindow):
         self.btn_abort_detection.setEnabled(is_running)
         self.detection_threshold.setEnabled(not is_running)
         self.frame_interval.setEnabled(not is_running)  # Also disable frame interval input
+        self.history_length.setEnabled(not is_running)
         
         # Disable/enable tabs except detection tab
         for i in range(self.tabs.count()):
@@ -832,6 +842,7 @@ class MainWindow(QMainWindow):
         settings = self.video_motion_settings[self.current_video_path]["motion_detection_settings"]
         sensitivity_value = settings["sensitivity"]
         frame_interval = settings["frame_interval"]
+        history_value = settings["history"]
         
         # Clean up any previous detection results for this video
         self.clean_detection_files()
@@ -842,6 +853,7 @@ class MainWindow(QMainWindow):
         # Create a fresh MotionDetector instance with the correct settings
         md_conf = self.config.get("motion_detector", {}).copy()
         md_conf["varThreshold"] = sensitivity_value
+        md_conf["history"] = history_value
         video_motion_detector = MotionDetector(**md_conf)
         
         # Start motion detection thread with the specific detector for this video
@@ -1382,6 +1394,11 @@ class MainWindow(QMainWindow):
             md_settings["frame_interval"] = int(self.frame_interval.text())
         except (ValueError, AttributeError):
             md_settings["frame_interval"] = 2  # Default if invalid
+
+        try:
+            md_settings["history"] = int(self.history_length.text())
+        except (ValueError, AttributeError):
+            md_settings["history"] = 500  # Default if invalid
     
     def on_tab_changed(self, index):
         """Handle tab change events"""

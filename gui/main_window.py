@@ -938,12 +938,15 @@ class MainWindow(QMainWindow):
             md_settings = settings["motion_detection_settings"]
             sensitivity_value = md_settings["sensitivity"]
             frame_interval_value = md_settings["frame_interval"]
+            history_value = md_settings.get("history", 500)  # Get history with default fallback
             
             # Update UI with these settings
             if hasattr(self, 'detection_threshold'):
                 self.detection_threshold.setText(str(sensitivity_value))
             if hasattr(self, 'frame_interval'):
                 self.frame_interval.setText(str(frame_interval_value))
+            if hasattr(self, 'history_length'):
+                self.history_length.setText(str(history_value))
             
             # Update UI to show current video being processed
             video_name = os.path.basename(next_video_path)
@@ -960,6 +963,7 @@ class MainWindow(QMainWindow):
             md_conf = self.config.get("motion_detector", {}).copy()
             # Override with video-specific settings
             md_conf["varThreshold"] = sensitivity_value
+            md_conf["history"] = history_value  # Add history parameter here
             # Create a new instance with these settings
             video_motion_detector = MotionDetector(**md_conf)
             
@@ -1313,7 +1317,8 @@ class MainWindow(QMainWindow):
         default_settings = {
             "motion_detection_settings": {
                 "sensitivity": 25,  # Default sensitivity
-                "frame_interval": 2  # Default frame interval (fps to process)
+                "frame_interval": 2,  # Default frame interval (fps to process)
+                "history": 500  # Add default history value
             }
         }
         
@@ -1370,6 +1375,10 @@ class MainWindow(QMainWindow):
         # Update frame interval input
         if hasattr(self, 'frame_interval') and 'frame_interval' in md_settings:
             self.frame_interval.setText(str(md_settings['frame_interval']))
+            
+        # Update history length input - add this section
+        if hasattr(self, 'history_length') and 'history' in md_settings:
+            self.history_length.setText(str(md_settings['history']))
     
     def update_settings_from_ui(self):
         """Update settings dictionary from UI controls for current video"""

@@ -3,6 +3,7 @@ import yaml
 from cli import InteractiveCLI
 from gui.main_window import MainWindow
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QIcon
 import sys
 import os
 
@@ -82,6 +83,8 @@ def main():
     if args.mode == "gui":
         print("Initializing GUI application...")
         app = QApplication(sys.argv)
+        app.setWindowIcon(QIcon('app_icon.png'))
+
         window = MainWindow(config)
         window.show()
         print("GUI initialized and displayed. Running application event loop.")

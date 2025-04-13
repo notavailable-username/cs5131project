@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLineEdit, QSlider, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QIcon
 import cv2
 import os
 import numpy as np
@@ -205,6 +205,8 @@ class MainWindow(QMainWindow):
         self.config = config
         self.setWindowTitle("Motion-Aware Few-Shot Object Detection")
         self.resize(1200, 800)
+
+        self.setWindowIcon(QIcon('app_icon.png'))
         
         # Initialize our models
         md_conf = config.get("motion_detector", {})

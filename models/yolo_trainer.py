@@ -78,7 +78,7 @@ class YOLOTrainer:
                 'batch': self.batch_size,
                 'imgsz': self.img_size,
                 'patience': self.patience,
-                'device': 'cpu',  # Can be changed to 'cuda' for GPU training
+                'device': 'cuda',  # Can be changed to 'cuda' for GPU training
                 'project': os.path.dirname(self.output_dir) if self.output_dir else None,
                 'name': os.path.basename(self.output_dir) if self.output_dir else None,
                 'exist_ok': True,

@@ -83,7 +83,7 @@ def main():
     if args.mode == "gui":
         print("Initializing GUI application...")
         app = QApplication(sys.argv)
-        app.setWindowIcon(QIcon('app_icon.png'))
+        app.setWindowIcon(QIcon('/gui/app_icon.png'))
 
         window = MainWindow(config)
         window.show()

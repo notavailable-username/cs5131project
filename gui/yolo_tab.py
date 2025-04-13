@@ -500,12 +500,12 @@ class YOLOTab(QWidget):
         
         self.btn_export_model = QPushButton("Export Trained Model")
         self.btn_export_model.clicked.connect(self.export_model)
-        self.btn_export_model.setEnabled(False)
+        self.btn_export_model.setEnabled(True)
         results_layout.addWidget(self.btn_export_model)
         
         self.btn_inference = QPushButton("Test Model (Inference)")
         self.btn_inference.clicked.connect(self.test_inference)
-        self.btn_inference.setEnabled(False)
+        self.btn_inference.setEnabled(True)
         results_layout.addWidget(self.btn_inference)
         
         results_group.setLayout(results_layout)

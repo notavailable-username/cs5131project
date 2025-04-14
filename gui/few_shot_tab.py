@@ -398,12 +398,10 @@ class FewShotTab(QWidget):
             #Load the training results from the json file
             with open(results_path, 'r') as f:
                 results = json.load(f)
-            
-            self.fsl_results = self._organize_results_by_frame(results)
 
             #Display predictions for the current frame
             current_frame_idx = self.main_window.video_player.get_current_frame_idx()
-            self.load_and_display_predictions(current_frame_idx, self.fsl_results)
+            self.load_and_display_annotations(current_frame_idx, self.btn_toggle_view.isChecked())
 
             QMessageBox.information(
                 self,

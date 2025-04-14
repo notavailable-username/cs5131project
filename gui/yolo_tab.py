@@ -670,16 +670,38 @@ class YOLOTab(QWidget):
             if hasattr(self.parent, 'classes'):
                 class_name_to_idx = {class_name.lower(): i for i, class_name in enumerate(self.parent.classes)}
                 
-            # Map class names from predictions file to our class indices
+            # FIX: Create a proper mapping from prediction class names to our class indices
+            # This is a new mapping for FSL prediction class names to our indices
             class_map = {}
-            # Override with actual class indices if available
-            for class_name, idx in class_name_to_idx.items():
-                for pred_class in class_map.keys():
-                    if pred_class.lower() == class_name.lower():
-                        class_map[pred_class] = idx
+            
+            # Check if we have any FSL prediction data for analysis
+            if has_predictions:
+                # Extract all unique class names from FSL predictions
+                fsl_class_names = set()
+                for frame_data in fsl_results.values():
+                    fsl_class_names.update(frame_data.keys())
+                
+                # Log the FSL class names for debugging
+                self.log_output.append(f"FSL prediction classes: {', '.join(fsl_class_names)}")
+                
+                # Try to match FSL class names with our class names (case-insensitive)
+                for pred_class in fsl_class_names:
+                    matched = False
+                    for class_name, idx in class_name_to_idx.items():
+                        if pred_class.lower() == class_name.lower():
+                            class_map[pred_class] = idx
+                            matched = True
+                            self.log_output.append(f"Mapped FSL class '{pred_class}' to class {idx} ({self.parent.classes[idx]})")
+                            break
+                    
+                    if not matched:
+                        self.log_output.append(f"Warning: Could not find matching class for FSL class '{pred_class}'")
             
             # Track frames that have been used (will be populated during processing)
             used_frames = set()
+            
+            # Track class distribution for monitoring class balance
+            class_distribution = {i: 0 for i in range(len(self.parent.classes))}
             
             # Process each frame with annotations
             for i, annotation_file in enumerate(annotation_files):
@@ -746,11 +768,22 @@ class YOLOTab(QWidget):
                     
                     # Handle different types of annotations
                     if class_id != '-':  # User annotated class
-                        # Use the class index directly
-                        class_idx = int(class_id) if class_id.isdigit() else 0
-                        yolo_annotations.append(f"{class_idx} {ann['bbox_yolo'][0]} {ann['bbox_yolo'][1]} {ann['bbox_yolo'][2]} {ann['bbox_yolo'][3]}")
-                        valid_annotations.append(ann)
-                        user_annotations += 1
+                        try:
+                            # FIX: Properly handle class ID conversion - only convert to int if it's a digit
+                            if class_id.isdigit():
+                                class_idx = int(class_id)
+                                if class_idx < len(self.parent.classes):
+                                    yolo_annotations.append(f"{class_idx} {ann['bbox_yolo'][0]} {ann['bbox_yolo'][1]} {ann['bbox_yolo'][2]} {ann['bbox_yolo'][3]}")
+                                    valid_annotations.append(ann)
+                                    user_annotations += 1
+                                    class_distribution[class_idx] += 1
+                                else:
+                                    self.log_output.append(f"Warning: Class index {class_idx} out of range, skipping annotation")
+                            else:
+                                self.log_output.append(f"Warning: Invalid class ID format: {class_id}, skipping annotation")
+                        except (ValueError, IndexError) as e:
+                            self.log_output.append(f"Error processing class ID {class_id}: {str(e)}")
+                            
                     elif has_predictions:  # Check if we have predictions for this detection
                         # This is a detection without user annotation, check FSL predictions
                         annotation_id = str(ann['annotation_id'])
@@ -768,9 +801,6 @@ class YOLOTab(QWidget):
                         # Try all possible frame keys
                         for frame_key in frame_keys_to_try:
                             if frame_key in fsl_results:
-                                # Correct structure navigation:
-                                # fsl_results[frame_key][class_name][annotation_id] = confidence
-                                
                                 # Look through all class predictions for this frame
                                 for class_name, annotations_dict in fsl_results[frame_key].items():
                                     # Try to find the annotation_id in this class's annotations
@@ -781,12 +811,18 @@ class YOLOTab(QWidget):
                                         # Keep track of the best class prediction
                                         if confidence > best_confidence:
                                             best_confidence = confidence
-                                            # Map the class name to our class index
+                                            
+                                            # FIX: Properly map FSL class names to our class indices using class_map
                                             if class_name in class_map:
                                                 best_class_idx = class_map[class_name]
                                             else:
-                                                # Default to first class if mapping not found
-                                                best_class_idx = 0
+                                                # Log warning about unmapped class
+                                                if not hasattr(self, '_warned_classes') or class_name not in self._warned_classes:
+                                                    if not hasattr(self, '_warned_classes'):
+                                                        self._warned_classes = set()
+                                                    self._warned_classes.add(class_name)
+                                                    self.log_output.append(f"Warning: FSL class '{class_name}' not found in class mapping, defaulting to class 0")
+                                                best_class_idx = 0  # Default to first class if mapping not found
                                             found_prediction = True
                         
                         # If we found a prediction and it's above threshold, add it to the valid annotations
@@ -794,6 +830,7 @@ class YOLOTab(QWidget):
                             yolo_annotations.append(f"{best_class_idx} {ann['bbox_yolo'][0]} {ann['bbox_yolo'][1]} {ann['bbox_yolo'][2]} {ann['bbox_yolo'][3]}")
                             valid_annotations.append(ann)
                             prediction_annotations += 1
+                            class_distribution[best_class_idx] += 1
                         elif found_prediction:
                             skipped_below_threshold += 1
                 
@@ -914,6 +951,14 @@ class YOLOTab(QWidget):
                 self.log_output.append(f"- Predictions below threshold (skipped): {skipped_below_threshold}")
             self.log_output.append(f"- Total annotations included: {user_annotations + prediction_annotations}")
             self.log_output.append(f"- Dataset saved to: {base_dir}")
+            
+            # Log class distribution to help diagnose class imbalance
+            self.log_output.append("\nClass distribution in prepared dataset:")
+            for class_idx, count in class_distribution.items():
+                if class_idx < len(self.parent.classes):
+                    class_name = self.parent.classes[class_idx]
+                    percentage = (count / total_annotations * 100) if total_annotations > 0 else 0
+                    self.log_output.append(f"  Class {class_idx} ({class_name}): {count} annotations ({percentage:.1f}%)")
             
             # Show dialog with statistics
             QMessageBox.information(self, "Training Data Ready", 

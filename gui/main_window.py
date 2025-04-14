@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Motion-Aware Few-Shot Object Detection")
         self.resize(1200, 800)
 
-        self.setWindowIcon(QIcon('app_icon.png'))
+        self.setWindowIcon(QIcon('app_icon_256.png'))
         
         # Initialize our models
         md_conf = config.get("motion_detector", {})

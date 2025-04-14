@@ -4,6 +4,7 @@ from cli import InteractiveCLI
 from gui.main_window import MainWindow
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QSize
 import sys
 import os
 
@@ -83,9 +84,15 @@ def main():
     if args.mode == "gui":
         print("Initializing GUI application...")
         app = QApplication(sys.argv)
-        app.setWindowIcon(QIcon('/gui/app_icon.png'))
+        
+        # Fix icon path and apply to both app and window
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gui', 'app_icon_256.png')
+        app_icon = QIcon()
+        app_icon.addFile(icon_path, QSize(256, 256))
+        app.setWindowIcon(app_icon)
 
         window = MainWindow(config)
+        window.setWindowIcon(app_icon)  # Set the same icon on the window
         window.show()
         print("GUI initialized and displayed. Running application event loop.")
         sys.exit(app.exec())
